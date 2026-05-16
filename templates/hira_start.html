@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>진료내역 가져오기 · 래드리본 병원용</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-hira-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      {% if debug_panel %}
+      <span class="hospital-start-header__debug"><a href="/debug/flows" class="hospital-start-header__debug-link">디버그</a></span>
+      {% endif %}
+      <a class="hospital-start-header__back" href="/">서비스 선택</a>
+    </div>
+  </header>
+
+  <main class="hospital-hira-main">
+    {% include "partials/step_bar.html" %}
+
+    <section class="hospital-hira-hero" aria-labelledby="hospital-hira-title">
+      <h1 id="hospital-hira-title" class="hospital-hira-title">진료내역 가져오기</h1>
+      <p class="hospital-hira-sub">
+        고객의 동의와 본인인증을 바탕으로 최근 5년 병·의원 진료내역과 처방조제내역을 가져옵니다.
+      </p>
+    </section>
+
+    <section class="hospital-hira-summary" aria-label="고객 정보 요약">
+      <h2 class="hospital-hira-summary__title">고객 정보</h2>
+      <dl class="hospital-hira-summary__dl">
+        <div class="hospital-hira-summary__row">
+          <dt>고객명</dt>
+          <dd>{{ customer_display.name }}</dd>
+        </div>
+        <div class="hospital-hira-summary__row">
+          <dt>주민등록번호</dt>
+          <dd>{{ customer_display.identity_masked }}</dd>
+        </div>
+        <div class="hospital-hira-summary__row">
+          <dt>휴대폰번호</dt>
+          <dd>{{ customer_display.phone_masked }}</dd>
+        </div>
+        <div class="hospital-hira-summary__row">
+          <dt>인증수단</dt>
+          <dd>{{ customer_display.auth_label }}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section class="hospital-hira-notice" aria-label="조회 안내">
+      <h2 class="hospital-hira-notice__title">안내</h2>
+      <ul class="hospital-hira-notice__list">
+        <li><strong>조회범위:</strong> 최근 5년</li>
+        <li>최근 약 3개월 자료는 심평원 반영 시차로 누락될 수 있습니다.</li>
+        <li><strong>민감상병:</strong> 포함</li>
+        <li>조회 결과는 보험금 청구 가능성 분석을 위한 참고자료이며, 법적 증빙자료를 대체하지 않습니다.</li>
+      </ul>
+    </section>
+
+    <section class="hospital-hira-state" aria-live="polite">
+      {% if medical_status == "pending" %}
+      <p class="hospital-hira-state__lead">진료내역 조회 인증이 필요합니다.</p>
+      <form class="hospital-hira-state__form" method="post" action="/hospital/hira-auth-request?flow_id={{ flow_id }}">
+        <button type="submit" class="btn btn--primary hospital-hira-state__btn">카카오 인증 요청하기</button>
+      </form>
+
+      {% elif medical_status == "waiting_auth" %}
+      <p class="hospital-hira-state__lead">카카오 인증 요청이 발송되었습니다.</p>
+      <p class="hospital-hira-state__desc">휴대폰에서 카카오 인증을 완료한 뒤 아래 버튼을 눌러주세요.</p>
+      <form class="hospital-hira-state__form" method="post" action="/hospital/hira-complete-auth?flow_id={{ flow_id }}">
+        <button type="submit" class="btn btn--primary hospital-hira-state__btn">인증 완료 후 진료내역 가져오기</button>
+      </form>
+
+      {% elif medical_status == "completed" %}
+      <p class="hospital-hira-state__lead">진료내역 수신 완료</p>
+      <ul class="hospital-hira-counts">
+        <li>기본진료내역 <strong>{{ medical_result_counts.basic }}</strong>건</li>
+        <li>세부진료정보 <strong>{{ medical_result_counts.detail }}</strong>건</li>
+        <li>처방조제내역 <strong>{{ medical_result_counts.prescribe }}</strong>건</li>
+      </ul>
+      {% if medical_records %}
+      <div class="hospital-hira-table-wrap">
+        <table class="hospital-hira-table">
+          <caption class="visually-hidden">수신된 진료내역 샘플</caption>
+          <thead>
+            <tr>
+              <th scope="col">병원명</th>
+              <th scope="col">진료일자</th>
+              <th scope="col">진료과</th>
+              <th scope="col">상병명</th>
+              <th scope="col">본인부담금</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in medical_records %}
+            <tr>
+              <td>{{ row.hospital_name }}</td>
+              <td>{{ row.visit_date }}</td>
+              <td>{{ row.department }}</td>
+              <td>{{ row.diagnosis }}</td>
+              <td>{{ row.copay_amount }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+      <p class="hospital-hira-state__next">
+        <a class="btn btn--primary hospital-hira-state__btn" href="/hospital/insurance-request?flow_id={{ flow_id }}">보험가입이력 가져오기</a>
+      </p>
+
+      {% elif medical_status == "failed" %}
+      <p class="hospital-hira-state__lead hospital-hira-state__lead--error">진료내역 조회에 실패했습니다.</p>
+      {% if medical_message %}
+      <p class="hospital-hira-state__desc">{{ medical_message }}</p>
+      {% endif %}
+      <form class="hospital-hira-state__form" method="post" action="/hospital/hira-retry?flow_id={{ flow_id }}">
+        <button type="submit" class="btn btn--ghost hospital-hira-state__btn">다시 시도</button>
+      </form>
+
+      {% else %}
+      <p class="hospital-hira-state__lead">알 수 없는 처리 상태입니다.</p>
+      <p class="hospital-hira-state__next">
+        <a class="btn btn--ghost hospital-hira-state__btn" href="/hospital/hira-start?flow_id={{ flow_id }}">화면 새로고침</a>
+      </p>
+      {% endif %}
+    </section>
+  </main>
+
+  <footer class="hospital-start-footer">
+    <p>
+      본선 시연에서는 실제 개인정보가 아닌 테스트 데이터를 사용합니다.<br />
+      실제 서비스에서는 고객 본인확인과 명시적 동의 후 필요한 범위에서만 정보를 조회합니다.
+    </p>
+  </footer>
+</body>
+</html>

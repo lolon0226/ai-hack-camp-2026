@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>래드리본 RedRibbon</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="intro-page intro-page--select">
+  <header class="intro-header">
+    <div class="intro-header__inner intro-header__inner--compact">
+      <a class="brand" href="/" aria-label="래드리본 홈">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      <span class="badge">AI Hack Camp 2026 본선 MVP</span>
+    </div>
+  </header>
+
+  <main class="intro-main intro-main--select">
+    <section class="intro-select-hero" aria-labelledby="intro-select-title">
+      <h1 id="intro-select-title" class="intro-select-title">
+        몰라서 놓친 보험금,<br />
+        래드리본이 찾아드립니다.
+      </h1>
+      <p class="intro-select-lead">
+        래드리본은 진료내역, 보험가입이력, 병원서류를 연결해<br />
+        청구 가능한 보험금 후보를 찾고,<br />
+        보험사 전송 직전의 청구 패키지까지 준비하는<br />
+        AI 보험금 청구 지원 서비스입니다.
+      </p>
+
+      <div class="intro-select-grid" role="list">
+        <a class="intro-select-card" href="{{ customer_url }}" role="listitem">
+          <span class="intro-select-card__label">고객용 서비스</span>
+          <span class="intro-select-card__desc">고객이 본인확인과 동의를 진행하고 청구 가능 보험금을 확인합니다.</span>
+        </a>
+        <a class="intro-select-card intro-select-card--hospital" href="{{ hospital_url }}" role="listitem">
+          <span class="intro-select-card__label">병원용 서비스</span>
+          <span class="intro-select-card__desc">병원에서 고객등록, 진료내역 조회, 보험가입이력 조회, AI 분석을 진행합니다.</span>
+        </a>
+        <a class="intro-select-card" href="{{ operator_url }}" role="listitem">
+          <span class="intro-select-card__label">운영자 콘솔</span>
+          <span class="intro-select-card__desc">청구 패키지, 수신서류, 고객별 진행상태를 확인합니다.</span>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="intro-footer intro-footer--legal">
+    <p>
+      본선 시연에서는 실제 개인정보가 아닌 테스트 데이터를 사용합니다.<br />
+      실제 서비스에서는 고객 본인확인과 명시적 동의 후 필요한 범위에서만 정보를 조회합니다.
+    </p>
+  </footer>
+</body>
+</html>

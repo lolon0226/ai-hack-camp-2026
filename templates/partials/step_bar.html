@@ -1,0 +1,9 @@
+{# current_step: 1..6, flow_id: optional #}
+<nav class="hospital-step-bar" aria-label="병원용 진행 단계">
+  <a class="hospital-step-bar__item{% if current_step == 1 %} hospital-step-bar__item--active{% elif current_step > 1 %} hospital-step-bar__item--done{% endif %}" href="/hospital/start">1 시작</a>
+  <a class="hospital-step-bar__item{% if current_step == 2 %} hospital-step-bar__item--active{% elif current_step > 2 %} hospital-step-bar__item--done{% endif %}" href="{% if flow_id %}/hospital/customer?flow_id={{ flow_id }}{% else %}/hospital/customer{% endif %}">2 고객등록</a>
+  <a class="hospital-step-bar__item{% if not flow_id %} hospital-step-bar__item--disabled{% elif current_step == 3 %} hospital-step-bar__item--active{% elif current_step > 3 %} hospital-step-bar__item--done{% endif %}" {% if flow_id %}href="/hospital/hira-start?flow_id={{ flow_id }}"{% else %}href="#" aria-disabled="true"{% endif %}>3 진료내역</a>
+  <a class="hospital-step-bar__item{% if not flow_id %} hospital-step-bar__item--disabled{% elif current_step == 4 %} hospital-step-bar__item--active{% elif current_step > 4 %} hospital-step-bar__item--done{% endif %}" {% if flow_id %}href="/hospital/insurance-request?flow_id={{ flow_id }}"{% else %}href="#" aria-disabled="true"{% endif %}>4 보험가입이력</a>
+  <a class="hospital-step-bar__item{% if not flow_id %} hospital-step-bar__item--disabled{% elif current_step == 5 %} hospital-step-bar__item--active{% elif current_step > 5 %} hospital-step-bar__item--done{% endif %}" {% if flow_id %}href="/hospital/analysis-ready?flow_id={{ flow_id }}"{% else %}href="#" aria-disabled="true"{% endif %}>5 통합분석</a>
+  <a class="hospital-step-bar__item{% if not flow_id %} hospital-step-bar__item--disabled{% elif current_step == 6 %} hospital-step-bar__item--active{% endif %}" {% if flow_id %}href="/hospital/ai-analysis?flow_id={{ flow_id }}"{% else %}href="#" aria-disabled="true"{% endif %}>6 AI분석</a>
+</nav>

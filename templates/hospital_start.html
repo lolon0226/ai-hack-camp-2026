@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>래드리본 병원용 서비스</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-start-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      {% if debug_panel %}
+      <span class="hospital-start-header__debug"><a href="/debug/flows" class="hospital-start-header__debug-link">디버그</a></span>
+      {% endif %}
+      <a class="hospital-start-header__back" href="/">서비스 선택</a>
+    </div>
+  </header>
+
+  <main class="hospital-start-main">
+    {% include "partials/step_bar.html" %}
+
+    <section class="hospital-start-hero" aria-labelledby="hospital-start-title">
+      <h1 id="hospital-start-title" class="hospital-start-title">래드리본 병원용 서비스</h1>
+      <p class="hospital-start-sub">
+        병원에서 고객의 동의와 본인확인을 바탕으로<br />
+        진료내역과 보험가입이력을 연결하고,<br />
+        AI가 보험금 청구 가능성을 분석할 수 있도록 지원합니다.
+      </p>
+    </section>
+
+    <div class="hospital-start-cards" role="list">
+      <article class="hospital-info-card" role="listitem">
+        <h2 class="hospital-info-card__title">고객등록</h2>
+        <p class="hospital-info-card__body">고객의 기본정보와 본인확인 정보를 등록합니다.</p>
+      </article>
+      <article class="hospital-info-card" role="listitem">
+        <h2 class="hospital-info-card__title">진료·보험 정보 조회</h2>
+        <p class="hospital-info-card__body">고객 동의 후 진료내역과 보험가입이력을 순서대로 가져옵니다.</p>
+      </article>
+      <article class="hospital-info-card" role="listitem">
+        <h2 class="hospital-info-card__title">청구 가능성 분석</h2>
+        <p class="hospital-info-card__body">진료내역과 보장정보를 비교해 청구 후보와 예상 금액을 확인합니다.</p>
+      </article>
+    </div>
+
+    <div class="hospital-start-cta-wrap">
+      <a class="btn btn--primary btn--hospital-start" href="{{ hospital_flow_first_url }}">시작하기</a>
+    </div>
+
+    <section class="hospital-printer-aside" aria-labelledby="hospital-printer-title">
+      <h2 id="hospital-printer-title" class="hospital-printer-aside__title">RedRibbon 프린터 연동</h2>
+      <p class="hospital-printer-aside__text">
+        병원 EMR에서 출력한 진료비 영수증, 세부내역서, 처방전 등은<br />
+        RedRibbon Printer를 통해 래드리본으로 자동 수신할 수 있습니다.
+      </p>
+      {% if printer_link_url %}
+      <a class="btn btn--ghost btn--sm" href="{{ printer_link_url }}">프린터 설정 보기</a>
+      {% else %}
+      <span class="hospital-printer-aside__disabled">프린터 설정 보기 <span class="hospital-printer-aside__badge">준비 중</span></span>
+      {% endif %}
+    </section>
+  </main>
+
+  <footer class="hospital-start-footer">
+    <p>
+      본선 시연에서는 실제 개인정보가 아닌 테스트 데이터를 사용합니다.<br />
+      실제 서비스에서는 고객 본인확인과 명시적 동의 후 필요한 범위에서만 정보를 조회합니다.
+    </p>
+  </footer>
+</body>
+</html>

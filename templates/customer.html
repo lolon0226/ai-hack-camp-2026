@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>고객등록 · 래드리본 병원용</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-customer-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      {% if debug_panel %}
+      <span class="hospital-start-header__debug"><a href="/debug/flows" class="hospital-start-header__debug-link">디버그</a></span>
+      {% endif %}
+      <a class="hospital-start-header__back" href="/">서비스 선택</a>
+    </div>
+  </header>
+
+  <main class="hospital-customer-main">
+    {% include "partials/step_bar.html" %}
+
+    <section class="hospital-customer-hero" aria-labelledby="hospital-customer-title">
+      <h1 id="hospital-customer-title" class="hospital-customer-title">고객등록</h1>
+      <p class="hospital-customer-sub">
+        진료내역과 보험가입이력 조회를 위해 고객의 기본 정보를 등록합니다.<br />
+        입력된 정보는 본인확인 및 자료 조회에만 사용됩니다.
+      </p>
+    </section>
+
+    {% if form_error %}
+    <p class="hospital-form-error" role="alert">{{ form_error }}</p>
+    {% endif %}
+
+    <form class="hospital-customer-form" method="post" action="/hospital/customer" autocomplete="off">
+      <div class="hospital-field">
+        <label class="hospital-field__label" for="customer-name">고객명</label>
+        <input class="hospital-field__input" id="customer-name" name="name" type="text" required maxlength="80" />
+      </div>
+
+      <div class="hospital-field">
+        <label class="hospital-field__label" for="customer-identity">주민등록번호</label>
+        <input class="hospital-field__input" id="customer-identity" name="identity" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="13" placeholder="8001011234567" required />
+        <p class="hospital-field__hint">하이픈 없이 입력</p>
+      </div>
+
+      <div class="hospital-field">
+        <label class="hospital-field__label" for="customer-phone">휴대폰번호</label>
+        <input class="hospital-field__input" id="customer-phone" name="phone" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="11" placeholder="01012345678" required />
+        <p class="hospital-field__hint">하이픈 없이 입력</p>
+      </div>
+
+      <div class="hospital-field">
+        <label class="hospital-field__label" for="customer-telecom">통신사</label>
+        <select class="hospital-field__input hospital-field__select" id="customer-telecom" name="telecom" required>
+          <option value="" disabled selected>선택</option>
+          <option value="SKT">SKT</option>
+          <option value="KT">KT</option>
+          <option value="LGU+">LGU+</option>
+          <option value="알뜰폰 SKT">알뜰폰 SKT</option>
+          <option value="알뜰폰 KT">알뜰폰 KT</option>
+          <option value="알뜰폰 LGU+">알뜰폰 LGU+</option>
+        </select>
+      </div>
+
+      <div class="hospital-field">
+        <label class="hospital-field__label" for="customer-email">이메일</label>
+        <input class="hospital-field__input" id="customer-email" name="email" type="email" placeholder="example@email.com" required maxlength="120" />
+      </div>
+
+      <div class="hospital-field">
+        <span class="hospital-field__label">인증수단</span>
+        <p class="hospital-field__readonly">카카오톡 간편인증</p>
+        <input type="hidden" name="auth_method" value="kakao" />
+      </div>
+
+      <div class="hospital-customer-actions">
+        <button type="submit" class="btn btn--primary hospital-customer-actions__primary">고객 등록 후 진료내역 조회로 이동</button>
+        <a class="btn btn--ghost hospital-customer-actions__secondary" href="/hospital/start">이전</a>
+      </div>
+    </form>
+  </main>
+
+  <footer class="hospital-start-footer">
+    <p>
+      본선 시연에서는 실제 개인정보가 아닌 테스트 데이터를 사용합니다.<br />
+      실제 서비스에서는 고객 본인확인과 명시적 동의 후 필요한 범위에서만 정보를 조회합니다.
+    </p>
+  </footer>
+</body>
+</html>
