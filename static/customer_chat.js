@@ -2,6 +2,17 @@
   "use strict";
 
   var STORAGE_KEY = "redribbon_customer_chat_v5";
+  var CUSTOMER_CHAT_STORAGE_PREFIXES = [
+    "redribbon_customer_chat",
+    "customer_chat",
+    "customer_find",
+    "redribbon_customer_find",
+  ];
+  var RESET_CONFIRM_MESSAGE =
+    "현재 입력한 고객용 대화 내용과 진행 상태를 초기화하시겠습니까?";
+  var WITHDRAW_CONFIRM_MESSAGE_1 =
+    "탈퇴하면 입력한 고객정보와 조회 진행정보가 삭제됩니다. 계속하시겠습니까?";
+  var WITHDRAW_CONFIRM_MESSAGE_2 = "정말 탈퇴하시겠습니까?";
   var steps = window.RedRibbonCustomerChatSteps || [];
   var autoClaimSteps = window.RedRibbonCustomerChatAutoClaimSteps || [];
   var mask = window.RedRibbonCustomerChatMask || {};
@@ -31,6 +42,15 @@
   var footerEl = document.querySelector(".customer-chat-footer");
   var progressEl = document.getElementById("customer-find-progress");
   var progressMessageEl = document.getElementById("customer-find-progress-message");
+  var progressSubtitleEl = document.getElementById("customer-find-progress-subtitle");
+  var progressHintEl = document.getElementById("customer-find-progress-hint");
+  var progressLoadingEl = document.getElementById("customer-find-progress-loading");
+  var progressLoadingLineEl = document.getElementById(
+    "customer-find-progress-loading-line"
+  );
+  var progressLoadingSubEl = document.getElementById(
+    "customer-find-progress-loading-sub"
+  );
   var progressStepsEl = document.getElementById("customer-find-progress-steps");
   var authConfirmBtn = document.getElementById("customer-find-auth-confirm");
   var resultsEl = document.getElementById("customer-find-results");
@@ -43,6 +63,8 @@
   var viewSheetClose = document.getElementById("customer-view-sheet-close");
   var viewSheetBackdrop = document.getElementById("customer-view-sheet-backdrop");
   var exitBtn = document.getElementById("customer-chat-exit");
+  var resetBtn = document.getElementById("customer-chat-reset");
+  var withdrawBtn = document.getElementById("customer-chat-withdraw");
 
   if (!logEl || !steps.length) {
     return;
@@ -65,6 +87,116 @@
     }
   }
 
+  /** 고객 채팅·find 관련 session/local 키만 수집(서버 DB·원부 미접촉). 탈퇴 시 전부 삭제. */
+  function collectCustomerChatStorageKeys(storage) {
+    var keys = [];
+    if (!storage) return keys;
+    for (var i = 0; i < storage.length; i++) {
+      var key = storage.key(i);
+      if (!key) continue;
+      var lower = key.toLowerCase();
+      var matched = CUSTOMER_CHAT_STORAGE_PREFIXES.some(function (prefix) {
+        return lower.indexOf(prefix) === 0;
+      });
+      if (matched) keys.push(key);
+    }
+    return keys;
+  }
+
+  function clearCustomerChatBrowserStorage() {
+    [window.sessionStorage, window.localStorage].forEach(function (storage) {
+      if (!storage) return;
+      collectCustomerChatStorageKeys(storage).forEach(function (key) {
+        try {
+          storage.removeItem(key);
+        } catch (e) {
+          /* ignore */
+        }
+      });
+    });
+  }
+
+  function resetCustomerChatSession() {
+    /* 초기화·탈퇴: 고객 탈퇴는 현재 고객 연결 데이터만 삭제하며, 준비된 원부 파일은 삭제하지 않는다. */
+    clearCustomerChatBrowserStorage();
+    document.body.classList.remove("customer-view-sheet-open");
+    document.body.classList.remove("customer-consent-modal-open");
+    window.location.assign("/customer/chat");
+  }
+
+  function clearCustomerUiAfterWithdraw() {
+    clearCustomerChatBrowserStorage();
+    state = defaultState();
+    if (logEl) logEl.innerHTML = "";
+    if (quickEl) {
+      quickEl.innerHTML = "";
+      quickEl.hidden = true;
+    }
+    if (progressEl) progressEl.hidden = true;
+    if (resultsEl) resultsEl.hidden = true;
+    var inlineAi = document.getElementById("customer-ai-inline");
+    if (inlineAi) inlineAi.hidden = true;
+    if (viewSheet) viewSheet.hidden = true;
+    document.body.classList.remove("customer-view-sheet-open");
+    document.body.classList.remove("customer-consent-modal-open");
+    hideConsentPanel();
+    hideConsentDock();
+    hideSummaryCta();
+    hideForm();
+    clearQuickReplies();
+    closeConsentModal();
+    if (footerEl) footerEl.hidden = false;
+    if (logEl) {
+      logEl.hidden = false;
+      logEl.classList.remove("customer-chat-log--after-results");
+    }
+  }
+
+  function runCustomerWithdraw() {
+    if (!window.confirm(WITHDRAW_CONFIRM_MESSAGE_1)) return;
+    if (!window.confirm(WITHDRAW_CONFIRM_MESSAGE_2)) return;
+    if (withdrawBtn) withdrawBtn.disabled = true;
+    fetch("/api/customer/withdraw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        flow_id: state.flowId || "",
+        payload: buildRegistrationPayload(),
+      }),
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          if (!res.ok && data && data.ok === false) {
+            return data;
+          }
+          if (!res.ok) {
+            return { ok: false, message: "탈퇴 처리에 실패했습니다." };
+          }
+          return data;
+        });
+      })
+      .catch(function () {
+        return { ok: false, message: "탈퇴 처리에 실패했습니다." };
+      })
+      .then(function (data) {
+        if (withdrawBtn) withdrawBtn.disabled = false;
+        if (!data || !data.ok) {
+          window.alert(
+            (data && data.message) || "탈퇴 처리에 실패했습니다."
+          );
+          return;
+        }
+        clearCustomerUiAfterWithdraw();
+        appendMessage("bot", data.message || "탈퇴가 완료되었습니다.", {
+          highlight: true,
+        });
+        var redirect = (data && data.redirect_url) || "/";
+        window.setTimeout(function () {
+          window.location.href = redirect;
+        }, 1000);
+      });
+  }
+
   function defaultState() {
     return {
       stepIndex: 0,
@@ -83,6 +215,8 @@
       autoClaimDeclined: false,
       autoClaimCompleted: false,
       autoClaimStepIndex: 0,
+      aiInlineOpened: false,
+      pendingAutoClaimOnReturn: false,
     };
   }
 
@@ -390,7 +524,7 @@
   }
 
   function resetFlow() {
-    sessionStorage.removeItem(STORAGE_KEY);
+    clearCustomerChatBrowserStorage();
     consentModalSynced = false;
     if (consentModalBody) {
       consentModalBody.innerHTML = "";
@@ -983,6 +1117,13 @@
 
   function resumeUi() {
     restoreMessages();
+    var promptAutoClaim =
+      document.body &&
+      document.body.getAttribute("data-prompt-auto-claim") === "1";
+    if (promptAutoClaim || state.pendingAutoClaimOnReturn) {
+      state.pendingAutoClaimOnReturn = false;
+      saveState();
+    }
     var step = currentStep();
     if (state.declined) {
       hideForm();
@@ -1013,13 +1154,21 @@
           } else if (state.autoClaimStepIndex > 0) {
             runAutoClaimStep();
           }
+        } else if (promptAutoClaim && !state.autoClaimPromptDone) {
+          showResultsFollowUpShell();
+          startAutoClaimPhase();
         }
       } else if (window.RedRibbonCustomerFindUi) {
-        window.RedRibbonCustomerFindUi.showProgressView(
-          (state.findStatus && state.findStatus.message) || "진행 중",
-          state.findStatus && state.findStatus.phase
-        );
-        window.RedRibbonCustomerFindUi.pollAdvance(false);
+        if (state.findStatus && state.findStatus.done) {
+          window.RedRibbonCustomerFindUi.fetchResults();
+        } else if (window.RedRibbonCustomerFindUi.applyStatus) {
+          window.RedRibbonCustomerFindUi.applyStatus(state.findStatus);
+        } else {
+          window.RedRibbonCustomerFindUi.showProgressView(
+            (state.findStatus && state.findStatus.message) || "진행 중",
+            state.findStatus && state.findStatus.phase
+          );
+        }
       }
       return;
     }
@@ -1082,9 +1231,32 @@
     }
   }
 
+  if (resetBtn) {
+    resetBtn.addEventListener("click", function () {
+      if (!window.confirm(RESET_CONFIRM_MESSAGE)) return;
+      resetCustomerChatSession();
+    });
+  }
+
+  if (withdrawBtn) {
+    withdrawBtn.addEventListener("click", runCustomerWithdraw);
+  }
+
   if (exitBtn) {
     exitBtn.addEventListener("click", function (event) {
       event.preventDefault();
+      var induceAutoClaim =
+        state.findResults &&
+        state.aiInlineOpened &&
+        !state.autoClaimCompleted &&
+        !state.autoClaimDeclined &&
+        !state.autoClaimPromptDone;
+      if (induceAutoClaim) {
+        state.pendingAutoClaimOnReturn = true;
+        saveState();
+        window.location.href = "/customer/chat?auto_claim=1";
+        return;
+      }
       if (hasChatProgress()) {
         var ok = window.confirm(
           "입력 중인 내용이 사라질 수 있습니다. 나가시겠습니까?"
@@ -1124,6 +1296,11 @@
     footerEl: footerEl,
     progressEl: progressEl,
     progressMessageEl: progressMessageEl,
+    progressSubtitleEl: progressSubtitleEl,
+    progressHintEl: progressHintEl,
+    progressLoadingEl: progressLoadingEl,
+    progressLoadingLineEl: progressLoadingLineEl,
+    progressLoadingSubEl: progressLoadingSubEl,
     progressStepsEl: progressStepsEl,
     authConfirmBtn: authConfirmBtn,
     resultsEl: resultsEl,
@@ -1137,6 +1314,8 @@
     viewSheetBackdrop: viewSheetBackdrop,
     buildAnswersPayload: buildAnswersPayload,
     saveState: saveState,
+    clearCustomerChatBrowserStorage: clearCustomerChatBrowserStorage,
+    clearCustomerUiAfterWithdraw: clearCustomerUiAfterWithdraw,
     escapeHtml: escapeHtml,
   };
 

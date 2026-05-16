@@ -7,7 +7,7 @@
   <title>래드리본 · 지난 보험금 찾기</title>
   <link rel="stylesheet" href="/static/customer_chat.css" />
 </head>
-<body class="customer-chat-page">
+<body class="customer-chat-page" data-prompt-auto-claim="{% if prompt_auto_claim %}1{% else %}0{% endif %}">
   <div class="customer-chat-shell">
     <header class="customer-chat-header">
       <a class="customer-chat-header__back" href="{{ back_url }}" aria-label="서비스 선택으로">‹</a>
@@ -38,7 +38,15 @@
 
     <section id="customer-find-results" class="customer-find-results" hidden>
       <div class="customer-find-results__card">
-        <h2 class="customer-find-results__title">조회가 완료되었습니다</h2>
+        <div class="customer-find-results__head">
+          <h2 class="customer-find-results__title">조회가 완료되었습니다</h2>
+          <button
+            type="button"
+            class="customer-find-results__auto-claim-btn"
+            id="customer-auto-claim-cta"
+            hidden
+          >자동청구를 이용하기</button>
+        </div>
         <ul class="customer-find-results__status">
           <li id="customer-result-medical-status">진료내역 조회 완료</li>
           <li id="customer-result-insurance-status">보험가입이력 조회 완료</li>
@@ -47,8 +55,11 @@
         <div class="customer-find-results__actions">
           <button type="button" class="customer-find-results__btn" data-view="medical">진료내역 보기</button>
           <button type="button" class="customer-find-results__btn" data-view="insurance">보험가입이력 보기</button>
-          <button type="button" class="customer-find-results__btn customer-find-results__btn--primary" data-view="ai">AI 분석 보기</button>
+          <button type="button" class="customer-find-results__btn customer-find-results__btn--primary" data-action="toggle-ai-inline">AI 분석 보기</button>
         </div>
+        <section id="customer-ai-inline" class="customer-ai-inline" hidden aria-label="AI 분석 결과">
+          <div class="customer-ai-inline__inner" id="customer-ai-inline-body"></div>
+        </section>
       </div>
     </section>
 
@@ -159,6 +170,13 @@
         <button type="submit" class="customer-chat-send" id="customer-chat-send">전송</button>
       </form>
       <p class="customer-chat-complete-note">새로고침 전까지 대화가 유지됩니다. (데모·민감정보 마스킹 표시)</p>
+      <div class="customer-chat-withdraw-wrap">
+        <button
+          type="button"
+          class="customer-chat-withdraw-btn"
+          id="customer-chat-withdraw"
+        >탈퇴하기</button>
+      </div>
     </footer>
   </div>
 

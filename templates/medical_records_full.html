@@ -16,7 +16,7 @@
           <span class="brand__name-en">RedRibbon</span>
         </span>
       </a>
-      <a class="hospital-start-header__back" href="/hospital/analysis-ready?flow_id={{ flow_id }}">5단계로 돌아가기</a>
+      <a class="hospital-start-header__back" href="{% if back_url %}{{ back_url }}{% else %}/hospital/analysis-ready?flow_id={{ flow_id }}{% endif %}">{% if hospital_lookup_mode %}고객 자료 확인으로{% else %}5단계로 돌아가기{% endif %}</a>
     </div>
   </header>
 
@@ -36,8 +36,12 @@
     {% include "partials/medical_records_full_tables.html" %}
 
     <nav class="medical-records-full-nav">
+      {% if back_url %}
+      <a class="btn btn--primary" href="{{ back_url }}">고객 자료 확인으로</a>
+      {% else %}
       <a class="btn btn--primary" href="/hospital/analysis-ready?flow_id={{ flow_id }}">5단계로 돌아가기</a>
       <a class="btn btn--ghost" href="/hospital/hira-start?flow_id={{ flow_id }}">3단계 진료내역</a>
+      {% endif %}
     </nav>
   </main>
 

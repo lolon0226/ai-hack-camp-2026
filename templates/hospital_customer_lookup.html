@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>고객등록검사 · 래드리본 병원용</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-lookup-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      <a class="hospital-start-header__back" href="/hospital/start">시작 화면</a>
+    </div>
+  </header>
+
+  <main class="hospital-lookup-main">
+    {% include "partials/step_bar.html" %}
+
+    <section class="hospital-lookup-card" aria-labelledby="hospital-lookup-title">
+      <h1 id="hospital-lookup-title" class="hospital-lookup-card__title">고객등록검사</h1>
+      <p class="hospital-lookup-card__lead">
+        고객명과 주민등록번호로 기존 등록 여부와<br />
+        고객용에서 완료한 진료·보험 자료를 확인합니다.
+      </p>
+
+      {% if form_error %}
+      <p class="hospital-lookup-alert hospital-lookup-alert--error" role="alert">{{ form_error }}</p>
+      {% endif %}
+      {% if lookup_message %}
+      <p class="hospital-lookup-alert hospital-lookup-alert--{{ lookup_level or 'info' }}" role="status">{{ lookup_message }}</p>
+      {% endif %}
+
+      <form class="hospital-lookup-form" method="post" action="/hospital/customer-lookup">
+        <label class="hospital-lookup-field">
+          <span class="hospital-lookup-field__label">고객명</span>
+          <input
+            type="text"
+            name="name"
+            class="hospital-lookup-field__input"
+            required
+            autocomplete="name"
+            placeholder="홍길동"
+            value="{{ customer_name_value or '' }}"
+          />
+        </label>
+        <label class="hospital-lookup-field">
+          <span class="hospital-lookup-field__label">주민등록번호 (13자리)</span>
+          <input
+            type="text"
+            name="identity"
+            class="hospital-lookup-field__input hospital-lookup-field__input--mono"
+            required
+            inputmode="numeric"
+            maxlength="14"
+            autocomplete="off"
+            placeholder="숫자 13자리"
+            aria-describedby="identity-hint"
+          />
+          <span id="identity-hint" class="hospital-lookup-field__hint">화면·로그에 주민번호 원문이 저장되지 않습니다.</span>
+        </label>
+        <button type="submit" class="btn btn--primary btn--lookup-submit">찾아보기</button>
+      </form>
+
+      <div class="hospital-lookup-actions">
+        {% if lookup_message and lookup_level == 'warn' %}
+        <a class="btn btn--primary" href="/hospital/customer">병원용 고객등록/조회 절차로 진행</a>
+        {% elif lookup_message and lookup_level == 'info' %}
+        <a class="btn btn--primary" href="/hospital/customer">신규 고객 등록으로 진행</a>
+        {% else %}
+        <a class="btn btn--ghost" href="/hospital/customer">신규 고객 등록으로 진행</a>
+        {% endif %}
+      </div>
+    </section>
+  </main>
+
+  <footer class="hospital-start-footer">
+    <p>저장된 자료만 조회하며, CODEF·보험사 API를 호출하지 않습니다.</p>
+  </footer>
+</body>
+</html>

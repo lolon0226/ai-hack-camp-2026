@@ -51,9 +51,19 @@ CREDENTIAL_SOURCE_GENERATED = "generated"
 CREDENTIAL_SOURCE_PREPARED_DEMO_GENERATED = "prepared_demo_generated"
 CREDENTIAL_SOURCE_USER_EDITED_GENERATED = "user_edited_generated"
 
+# 준비 보험 원부 후보(읽기 전용). insurance_source_protection 과 동일 경로 집합.
+PREPARED_INSURANCE_SOURCE_PATHS: tuple[str, ...] = (
+    r"C:\Users\DELL\Desktop\success_insurance_record_export.json",
+    str(BASE_DIR / "success_insurance_record_export.json"),
+    str(DATA_DIR / "success_insurance_record_export.json"),
+    str(DATA_DIR / "prepared_insurance_record_export.json"),
+)
+PROTECTED_INSURANCE_SOURCE_PATHS: tuple[str, ...] = PREPARED_INSURANCE_SOURCE_PATHS
+PREPARED_INSURANCE_RECORD_EXPORT_CANDIDATES = PREPARED_INSURANCE_SOURCE_PATHS
+PREPARED_INSURANCE_NOT_FOUND_MESSAGE = "준비된 보험가입이력 원부를 찾을 수 없습니다."
+
 from services.insurance_source_protection import (
     InsuranceSourceProtectionError,
-    PROTECTED_INSURANCE_SOURCE_PATHS,
     all_protected_insurance_file_paths,
     assert_reset_paths_safe,
     assert_safe_insurance_file_delete,
@@ -65,16 +75,25 @@ from services.insurance_source_protection import (
     sql_preserved_insurance_source_clause,
 )
 
-# resolve_prepared_insurance_record_export_path() 후보 — PROTECTED_INSURANCE_SOURCE_PATHS 와 동기화
-PREPARED_INSURANCE_RECORD_EXPORT_CANDIDATES = PROTECTED_INSURANCE_SOURCE_PATHS
-
 
 def resolve_prepared_insurance_record_export_path() -> Path | None:
-    """본선 시연용 준비된 보험가입이력 JSON 경로."""
+    """본선 시연용 준비된 보험가입이력 JSON 경로(읽기 전용, 원본 파일 변경 없음)."""
     env_path = (os.getenv("PREPARED_INSURANCE_RECORD_JSON") or "").strip()
-    candidates = ([env_path] if env_path else []) + list(PREPARED_INSURANCE_SOURCE_PATHS)
+    candidates: list[str] = []
+    if env_path:
+        candidates.append(env_path)
+    candidates.extend(PREPARED_INSURANCE_SOURCE_PATHS)
     for raw in candidates:
-        path = Path(raw)
+        if not str(raw or "").strip():
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (BASE_DIR / path).resolve()
+        else:
+            try:
+                path = path.resolve()
+            except OSError:
+                continue
         if path.is_file():
             return path
     return None
@@ -1259,6 +1278,140 @@ def storage_health() -> dict[str, Any]:
     return get_storage_health()
 
 
+def get_latest_flow_id_for_customer_key(customer_key: str) -> str | None:
+    """customer_key에 연결된 최신 flow_id(customer_flows → 저장본 순)."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return None
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT flow_id FROM customer_flows
+            WHERE customer_key = ?
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (key,),
+        ).fetchone()
+        if row and str(row[0] or "").strip():
+            return str(row[0]).strip()
+        row = conn.execute(
+            """
+            SELECT flow_id FROM medical_records
+            WHERE customer_key = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (key,),
+        ).fetchone()
+        if row and str(row[0] or "").strip():
+            return str(row[0]).strip()
+        row = conn.execute(
+            """
+            SELECT flow_id FROM insurance_records
+            WHERE customer_key = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (key,),
+        ).fetchone()
+        if row and str(row[0] or "").strip():
+            return str(row[0]).strip()
+    finally:
+        conn.close()
+    return None
+
+
+def customer_record_counts(customer_key: str) -> tuple[int, int]:
+    """(medical_records 건수, insurance_records 건수)."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return (0, 0)
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        med = conn.execute(
+            "SELECT COUNT(*) FROM medical_records WHERE customer_key = ?",
+            (key,),
+        ).fetchone()
+        ins = conn.execute(
+            "SELECT COUNT(*) FROM insurance_records WHERE customer_key = ?",
+            (key,),
+        ).fetchone()
+        return (int(med[0] or 0) if med else 0, int(ins[0] or 0) if ins else 0)
+    finally:
+        conn.close()
+
+
+def lookup_customer_by_name_identity(name: str, identity: str) -> dict[str, Any] | None:
+    """이름·주민(13자리)으로 customers 조회 — 주민 원문은 identity_hash로만 비교."""
+    if not is_search_hash_secret_configured():
+        return None
+    fields = normalize_customer_fields({"name": name, "identity": identity, "phone": ""})
+    display_name = fields["name"]
+    identity_digits = fields["identity"]
+    if not display_name or len(identity_digits) != 13:
+        return None
+    identity_h = _identity_hash(identity_digits)
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    row: tuple[Any, ...] | None = None
+    try:
+        row = conn.execute(
+            """
+            SELECT customer_key, name, email, created_at
+            FROM customers
+            WHERE name = ? AND identity_hash = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (display_name, identity_h),
+        ).fetchone()
+        if not row:
+            try:
+                alt_key = make_customer_key(
+                    {
+                        "name": display_name,
+                        "identity": identity_digits,
+                        "phone": "",
+                    }
+                )
+            except PersistentStoreConfigError:
+                alt_key = ""
+            if alt_key:
+                row = conn.execute(
+                    """
+                    SELECT customer_key, name, email, created_at
+                    FROM customers
+                    WHERE customer_key = ?
+                    LIMIT 1
+                    """,
+                    (alt_key,),
+                ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    customer_key = str(row[0] or "").strip()
+    if not customer_key:
+        return None
+    med_count, ins_count = customer_record_counts(customer_key)
+    flow_id = get_latest_flow_id_for_customer_key(customer_key)
+    return {
+        "customer_key": customer_key,
+        "name": str(row[1] or display_name).strip() or display_name,
+        "email": str(row[2] or "").strip(),
+        "created_at": str(row[3] or ""),
+        "has_medical": med_count > 0,
+        "has_insurance": ins_count > 0,
+        "medical_count": med_count,
+        "insurance_count": ins_count,
+        "flow_id": flow_id,
+    }
+
+
 def get_customer_profile_by_key(customer_key: str) -> dict[str, Any] | None:
     """운영자 화면용 — customer_key로 이름 등 메타 조회."""
     key = str(customer_key or "").strip()
@@ -1968,3 +2121,227 @@ def assert_database_file_reset_safe(db_path: str | Path) -> None:
             f"보호된 DB 백업/시드 파일은 초기화 대상에 포함할 수 없습니다: {resolved}"
         )
     assert_reset_paths_safe([resolved], operation="database_reset")
+
+
+# 고객 탈퇴는 현재 고객 연결 데이터만 삭제하며, 준비된 원부 파일은 삭제하지 않는다.
+CUSTOMER_WITHDRAWAL_SCOPE_NOTE = (
+    "고객 탈퇴는 현재 고객 연결 데이터만 삭제하며, 준비된 원부 파일은 삭제하지 않는다."
+)
+
+
+def _metadata_indicates_customer_upload(metadata: dict[str, Any]) -> bool:
+    channel = str(
+        metadata.get("upload_channel")
+        or metadata.get("upload_source")
+        or metadata.get("source")
+        or ""
+    ).strip().lower()
+    return channel in (
+        "customer",
+        "customer_chat",
+        "customer_upload",
+        "customer_portal",
+    )
+
+
+def _delete_customer_owned_received_files(customer_key: str) -> int:
+    """고객 전용 업로드 파일만 삭제(보호·병원 수신 원본 경로 제외)."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return 0
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    deleted = 0
+    try:
+        rows = conn.execute(
+            """
+            SELECT file_path, metadata_json
+            FROM operator_received_documents
+            WHERE customer_key = ?
+            """,
+            (key,),
+        ).fetchall()
+    finally:
+        conn.close()
+    for file_path, metadata_json in rows:
+        meta = _parse_received_document_metadata(metadata_json)
+        if not _metadata_indicates_customer_upload(meta):
+            continue
+        path = Path(str(file_path or "").strip())
+        if not path.is_file():
+            continue
+        if is_protected_insurance_file_path(path) or is_protected_database_file_path(path):
+            continue
+        try:
+            assert_safe_insurance_file_delete(path, operation="customer_withdraw")
+        except InsuranceSourceProtectionError:
+            continue
+        try:
+            path.unlink()
+            deleted += 1
+        except OSError:
+            logger.warning(
+                "customer withdraw file delete skipped path=%s",
+                path.name,
+            )
+    return deleted
+
+
+def delete_medical_records_for_customer(customer_key: str) -> int:
+    """운영 DB medical_records — 해당 고객 연결분만 삭제(백업 DB 파일 미접촉)."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return 0
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "DELETE FROM medical_records WHERE customer_key = ?",
+            (key,),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def lookup_customer_key_for_flow_id(flow_id: str) -> str | None:
+    """customer_flows 테이블에서 flow_id → customer_key."""
+    fid = str(flow_id or "").strip()
+    if not fid:
+        return None
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT customer_key FROM customer_flows WHERE flow_id = ?",
+            (fid,),
+        ).fetchone()
+        if not row:
+            return None
+        key = str(row[0] or "").strip()
+        return key or None
+    finally:
+        conn.close()
+
+
+def delete_customer_flows_for_customer(
+    customer_key: str,
+    *,
+    flow_id: str | None = None,
+) -> int:
+    key = str(customer_key or "").strip()
+    fid = str(flow_id or "").strip()
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if fid:
+            cur = conn.execute("DELETE FROM customer_flows WHERE flow_id = ?", (fid,))
+        elif key:
+            cur = conn.execute(
+                "DELETE FROM customer_flows WHERE customer_key = ?",
+                (key,),
+            )
+        else:
+            return 0
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def delete_customer_row(customer_key: str) -> int:
+    key = str(customer_key or "").strip()
+    if not key:
+        return 0
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute("DELETE FROM customers WHERE customer_key = ?", (key,))
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def disconnect_operator_received_documents_for_customer(customer_key: str) -> int:
+    """수신문서 행은 유지하고 고객 연결만 해제."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return 0
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE operator_received_documents
+            SET customer_key = NULL, linked_customer_name = NULL
+            WHERE customer_key = ?
+            """,
+            (key,),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def delete_actual_loss_claim_demo_for_customer(customer_key: str) -> int:
+    key = str(customer_key or "").strip()
+    if not key:
+        return 0
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "DELETE FROM actual_loss_claim_demo_transmissions WHERE customer_key = ?",
+            (key,),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def withdraw_customer_operational_data(
+    *,
+    customer_key: str,
+    flow_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    고객 탈퇴 — 연결된 운영 데이터 삭제.
+
+    고객 탈퇴는 현재 고객 연결 데이터만 삭제하며, 준비된 원부 파일은 삭제하지 않는다.
+    (준비 보험가입이력 원부 JSON/DB, success_insurance_record_export.json,
+    data/redribbon_final_before_*.db, prepared/seed/demo 원부 등)
+    """
+    key = str(customer_key or "").strip()
+    if not key:
+        raise ValueError("customer_key_required")
+
+    customer_files_deleted = _delete_customer_owned_received_files(key)
+    received_docs_disconnected = disconnect_operator_received_documents_for_customer(key)
+    medical_deleted = delete_medical_records_for_customer(key)
+    insurance_deleted = delete_insurance_records_resettable(customer_key=key)
+    credentials_deleted = delete_credit4u_credentials_resettable(customer_key=key)
+    flows_deleted = delete_customer_flows_for_customer(key, flow_id=flow_id)
+    if flow_id and flows_deleted == 0:
+        flows_deleted += delete_customer_flows_for_customer(key)
+    customers_deleted = delete_customer_row(key)
+    claim_demo_deleted = delete_actual_loss_claim_demo_for_customer(key)
+    preserved_insurance = count_preserved_insurance_records()
+
+    return {
+        "scope_note": CUSTOMER_WITHDRAWAL_SCOPE_NOTE,
+        "customer_key_prefix": key[:8] + "…" if len(key) > 8 else key,
+        "flow_id": str(flow_id or "").strip() or "—",
+        "customer_files_deleted": customer_files_deleted,
+        "received_documents_disconnected": received_docs_disconnected,
+        "medical_records_deleted": medical_deleted,
+        "insurance_records_deleted": insurance_deleted,
+        "credit4u_credentials_deleted": credentials_deleted,
+        "customer_flows_deleted": flows_deleted,
+        "customers_deleted": customers_deleted,
+        "actual_loss_claim_demo_deleted": claim_demo_deleted,
+        "preserved_insurance_records_remaining": preserved_insurance,
+    }

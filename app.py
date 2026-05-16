@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -147,8 +148,13 @@ from services.persistent_store import (  # noqa: E402
     is_search_hash_secret_configured,
     has_stored_credit4u_credentials,
     list_operator_received_documents,
+    load_latest_insurance_record_by_customer_key,
     load_latest_insurance_records,
     load_latest_medical_records,
+    load_latest_medical_records_by_customer_key,
+    lookup_customer_by_name_identity,
+    get_customer_profile_by_key,
+    get_latest_flow_id_for_customer_key,
     make_customer_key,
     rebuild_insurance_summary_for_customer,
     normalize_customer_fields,
@@ -164,10 +170,13 @@ from services.persistent_store import (  # noqa: E402
     INSURANCE_SOURCE_PREPARED_DEMO,
     CREDENTIAL_SOURCE_PREPARED_DEMO_GENERATED,
     resolve_prepared_insurance_record_export_path,
+    PREPARED_INSURANCE_NOT_FOUND_MESSAGE,
     reset_scope_summary,
     restore_prepared_medical_records_for_customer,
     has_prepared_medical_backup,
     MEDICAL_SOURCE_PREPARED_RECORD,
+    withdraw_customer_operational_data,
+    lookup_customer_key_for_flow_id,
 )
 from services.insurance_source_protection import (
     InsuranceSourceProtectionError,
@@ -470,6 +479,99 @@ def _apply_codef_limit_debug(
         entry["prepared_insurance_loaded"] = prepared_insurance_loaded
 
 
+_HOSPITAL_KAKAO_AUTH_SENT_MESSAGE = (
+    "카카오로 인증 요청을 보내드렸습니다. 휴대폰에서 인증을 완료해 주세요."
+)
+
+
+def _mark_hospital_demo_kakao_flow(entry: dict[str, Any]) -> None:
+    entry["demo_kakao_auth_flow"] = True
+    entry["realtime_codef_call_skipped"] = True
+    entry["codef_realtime_call_skipped"] = True
+
+
+def _begin_hospital_medical_kakao_waiting(entry: dict[str, Any]) -> None:
+    _mark_hospital_demo_kakao_flow(entry)
+    entry["hospital_kakao_pending"] = "medical"
+    entry["medical_message"] = _HOSPITAL_KAKAO_AUTH_SENT_MESSAGE
+
+
+def _begin_hospital_insurance_kakao_waiting(entry: dict[str, Any]) -> None:
+    _mark_hospital_demo_kakao_flow(entry)
+    entry["hospital_kakao_pending"] = "insurance"
+    entry["insurance_stage"] = "kakao_auth_waiting"
+    entry["insurance_status"] = "in_progress"
+    entry["insurance_message"] = _HOSPITAL_KAKAO_AUTH_SENT_MESSAGE
+
+
+def _complete_hospital_medical_prepared_load(flow_id: str, entry: dict[str, Any]) -> bool:
+    """준비·저장 진료내역 로드(CODEF 미호출)."""
+    _mark_hospital_demo_kakao_flow(entry)
+    entry.pop("hospital_kakao_pending", None)
+    if _apply_saved_medical_records(flow_id, entry):
+        entry["medical_status"] = "completed"
+        entry["hira_stage"] = "completed"
+        entry["medical_message"] = "진료내역을 가져왔습니다."
+        _persist_medical_records_to_sqlite(flow_id, entry)
+        return True
+    if _restore_prepared_medical_for_flow(flow_id, entry):
+        _persist_medical_records_to_sqlite(flow_id, entry)
+        return True
+    entry["medical_status"] = "failed"
+    entry["medical_message"] = "진료내역을 가져오지 못했습니다. 다시 시도해 주세요."
+    return False
+
+
+def _complete_hospital_insurance_prepared_load(flow_id: str, entry: dict[str, Any]) -> bool:
+    """준비 보험가입이력 원부 로드(CODEF·보험사 API 미호출)."""
+    _mark_hospital_demo_kakao_flow(entry)
+    entry.pop("hospital_kakao_pending", None)
+    entry["insurance_stage"] = "insurance_loading"
+    try:
+        _provision_finals_credit4u_credentials(entry)
+        _apply_prepared_demo_insurance_records(flow_id, entry)
+        entry["insurance_source"] = INSURANCE_FLOW_SOURCE_PREPARED_DEMO
+        entry["insurance_status"] = "completed"
+        entry["insurance_stage"] = "completed"
+        entry["insurance_message"] = "보험가입이력을 가져왔습니다."
+        _apply_codef_limit_debug(entry, prepared_insurance_loaded=True)
+        return True
+    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = (
+            str(exc) or PREPARED_INSURANCE_NOT_FOUND_MESSAGE
+        )
+        entry["insurance_error_code"] = "PREPARED_INSURANCE_LOAD_FAILED"
+        _apply_codef_limit_debug(entry, prepared_insurance_loaded=False)
+        return False
+
+
+def _ensure_credit4u_credentials_on_insurance_page(
+    entry: dict[str, Any],
+) -> dict[str, Any]:
+    """4단계 진입 시 ID/PW 자동 생성·DB 저장."""
+    if _use_prepared_demo_insurance():
+        _provision_finals_credit4u_credentials(entry)
+    else:
+        _provision_credit4u_credentials(entry)
+    creds = entry.get("credit4u_credentials") or {}
+    password = str(creds.get("password") or "").strip()
+    user_id = str(creds.get("id") or "").strip()
+    rule_ok = bool(password and user_id)
+    saved = False
+    if rule_ok:
+        saved = _save_credit4u_credentials_to_store(entry)
+    return {
+        "generated_password_rule_ok": rule_ok,
+        "credential_saved": bool(saved),
+        "credential_source": str(
+            entry.get("credential_source") or creds.get("source") or "—"
+        ),
+        "password_present": bool(password),
+    }
+
+
 def _codef_limit_debug_for_template(entry: dict[str, Any]) -> dict[str, str]:
     def _yn(key: str) -> str:
         value = entry.get(key)
@@ -482,6 +584,7 @@ def _codef_limit_debug_for_template(entry: dict[str, Any]) -> dict[str, str]:
     return {
         "codef_daily_limit_exceeded": _yn(entry.get("codef_daily_limit_exceeded")),
         "realtime_codef_call_skipped": _yn(entry.get("realtime_codef_call_skipped")),
+        "demo_kakao_auth_flow": _yn(entry.get("demo_kakao_auth_flow")),
         "prepared_medical_loaded": _yn(entry.get("prepared_medical_loaded")),
         "prepared_insurance_loaded": _yn(entry.get("prepared_insurance_loaded")),
     }
@@ -554,25 +657,45 @@ def _apply_insurance_codf_rate_limited(
     *,
     result_code: str,
 ) -> None:
-    """CF-00012: credit4u 실호출 없이 준비된 보험가입이력 원부만 현재 고객에 저장."""
+    """CF-00012: 실시간 credit4u 중단 — 준비본은 카카오 인증 완료 후 로드."""
     entry["credit4u_result_code"] = result_code
     entry["insurance_error_code"] = result_code
     entry["insurance_stage"] = "rate_limited"
+    entry["insurance_status"] = "pending"
     _apply_codef_limit_debug(entry, prepared_insurance_loaded=False)
+    entry["insurance_message"] = CODEF_DAILY_LIMIT_INSURANCE_MESSAGE
     try:
         _provision_finals_credit4u_credentials(entry)
-        _apply_prepared_demo_insurance_records(flow_id, entry)
-        entry["insurance_message"] = CODEF_DAILY_LIMIT_INSURANCE_MESSAGE
-        entry["codef_realtime_call_skipped"] = True
-        _apply_codef_limit_debug(entry, prepared_insurance_loaded=True)
-    except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-        entry["insurance_status"] = "failed"
-        entry["insurance_stage"] = "rate_limited"
-        entry["insurance_message"] = (
-            str(exc) or "준비된 보험가입이력을 불러오지 못했습니다."
-        )
-        entry["insurance_error_code"] = "PREPARED_INSURANCE_LOAD_FAILED"
-        _apply_codef_limit_debug(entry, prepared_insurance_loaded=False)
+    except Exception:
+        pass
+
+
+def _apply_saved_medical_by_customer_key(
+    entry: dict[str, Any], customer_key: str
+) -> bool:
+    """customer_key 기준 저장 진료내역 복원(CODEF 미호출)."""
+    bundle = load_latest_medical_records_by_customer_key(customer_key)
+    if not bundle:
+        return False
+    _apply_hira_second_completed(
+        entry,
+        lists={
+            "basic": bundle.get("basic") or [],
+            "detail": bundle.get("detail") or [],
+            "prescribe": bundle.get("prescribe") or [],
+            "counts": bundle.get("counts")
+            or {"basic": 0, "detail": 0, "prescribe": 0},
+        },
+        result_code="SAVED",
+        result_message="저장된 진료내역",
+    )
+    entry["medical_message"] = "저장된 진료내역을 불러왔습니다."
+    entry["medical_source"] = "saved"
+    entry["medical_records_source"] = bundle.get("source") or "saved"
+    entry["medical_records_saved_at"] = bundle.get("created_at")
+    entry["medical_records_from_flow_id"] = bundle.get("flow_id")
+    entry["loaded_medical_record_id"] = bundle.get("record_id")
+    return True
 
 
 def _apply_saved_medical_records(flow_id: str, entry: dict[str, Any]) -> bool:
@@ -582,6 +705,9 @@ def _apply_saved_medical_records(flow_id: str, entry: dict[str, Any]) -> bool:
         return False
     customer = _normalize_stored_customer(customer)
     entry["customer"] = customer
+    key = str(entry.get("customer_key") or "").strip()
+    if key:
+        return _apply_saved_medical_by_customer_key(entry, key)
     bundle = load_latest_medical_records(customer)
     if not bundle:
         return False
@@ -1430,18 +1556,23 @@ def _credit4u_credentials_view_context(entry: dict[str, Any]) -> dict[str, Any]:
     creds = entry.get("credit4u_credentials")
     cred_error = entry.get("credit4u_credentials_error")
     cred_error_text = str(cred_error).strip() if cred_error else None
-    finals_readonly = _use_prepared_demo_insurance()
+    finals_readonly = True
+    auto_notice = "자동 생성된 신용정보원 조회용 계정입니다."
     if isinstance(creds, dict) and str(creds.get("id") or "").strip():
         password = str(creds.get("password") or "")
+        pw_fill = "●●●●●●●●●●●●" if password else ""
         return {
             "show_credit4u_credentials_card": True,
             "credit4u_credentials": creds,
             "credit4u_credentials_error": cred_error_text,
             "credit4u_id": str(creds.get("id") or ""),
             "credit4u_password_available": bool(password),
-            "credit4u_password": "",
+            "credit4u_password": pw_fill,
+            "credit4u_password_fill": pw_fill,
+            "credit4u_auto_generated_notice": auto_notice,
             "credit4u_credentials_readonly": finals_readonly,
             "credit4u_password_configured": bool(password),
+            "credit4u_hide_proceed_button": True,
         }
     if cred_error_text:
         return {
@@ -1985,12 +2116,13 @@ def _persist_insurance_records_to_sqlite(
 
 def _load_prepared_insurance_export() -> dict[str, Any]:
     """시연용 준비된 보험가입이력 저장본 JSON 로드(읽기 전용, 원본 파일 변경 없음)."""
-    path = resolve_prepared_insurance_record_export_path()
+    try:
+        path = resolve_prepared_insurance_record_export_path()
+    except Exception:
+        logger.exception("resolve_prepared_insurance_record_export_path failed")
+        raise FileNotFoundError(PREPARED_INSURANCE_NOT_FOUND_MESSAGE) from None
     if path is None:
-        raise FileNotFoundError(
-            "준비된 보험가입이력 JSON을 찾을 수 없습니다. "
-            "success_insurance_record_export.json 경로를 확인해 주세요."
-        )
+        raise FileNotFoundError(PREPARED_INSURANCE_NOT_FOUND_MESSAGE)
     with path.open(encoding="utf-8") as handle:
         exported = json.load(handle)
     if not isinstance(exported, dict):
@@ -3003,16 +3135,7 @@ def _retry_insurance_contract_info(flow_id: str, entry: dict[str, Any]) -> None:
             _apply_codef_limit_debug(entry, prepared_insurance_loaded=False)
         return
     if _use_prepared_demo_insurance():
-        _clear_insurance_codf_session_fields(entry)
-        entry["insurance_message"] = "준비된 보험가입이력을 다시 불러오는 중입니다."
-        try:
-            _provision_finals_credit4u_credentials(entry)
-            _apply_prepared_demo_insurance_records(flow_id, entry)
-        except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-            entry["insurance_status"] = "failed"
-            entry["insurance_stage"] = "failed"
-            entry["insurance_message"] = str(exc) or "준비된 보험가입이력을 불러오지 못했습니다."
-            entry["insurance_error_code"] = "PREPARED_INSURANCE_LOAD_FAILED"
+        _begin_hospital_insurance_kakao_waiting(entry)
         return
     _clear_insurance_codf_session_fields(entry)
     entry.pop("insurance_source", None)
@@ -3114,6 +3237,66 @@ def _apply_saved_insurance_records_to_entry(
     return True
 
 
+def _apply_saved_insurance_by_customer_key(
+    entry: dict[str, Any], customer_key: str
+) -> bool:
+    saved = load_latest_insurance_record_by_customer_key(customer_key)
+    if not saved:
+        return False
+    return _apply_saved_insurance_records_to_entry(entry, saved)
+
+
+def _hospital_entry_from_customer_key(
+    customer_key: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """저장본만으로 병원 조회용 entry·flow_id 구성(CODEF 미호출)."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return None
+    profile = get_customer_profile_by_key(key)
+    if not profile:
+        return None
+    flow_id = get_latest_flow_id_for_customer_key(key) or ""
+    if flow_id and flow_id in FLOW_STORE and isinstance(FLOW_STORE.get(flow_id), dict):
+        entry: dict[str, Any] = dict(FLOW_STORE[flow_id])
+    else:
+        entry = {
+            "customer": {
+                "name": profile.get("name") or "—",
+                "identity": "",
+                "phone": "",
+                "email": profile.get("email") or "",
+                "auth_method": "kakao",
+            },
+            "customer_key": key,
+        }
+    entry["customer_key"] = key
+    customer = entry.get("customer")
+    if isinstance(customer, dict):
+        customer["name"] = profile.get("name") or customer.get("name") or "—"
+    _apply_saved_medical_by_customer_key(entry, key)
+    _apply_saved_insurance_by_customer_key(entry, key)
+    resolved_flow = (
+        flow_id
+        or str(entry.get("medical_records_from_flow_id") or "").strip()
+        or str(entry.get("loaded_insurance_record_flow_id") or "").strip()
+    )
+    if not resolved_flow:
+        resolved_flow = f"ck-{key[:12]}"
+    return resolved_flow, entry
+
+
+def _hospital_lookup_form_error(name: str, identity: str) -> str | None:
+    if not str(name or "").strip():
+        return "고객명을 입력해 주세요."
+    digits = re.sub(r"\D", "", str(identity or ""))[:13]
+    if len(digits) != 13:
+        return "주민등록번호 13자리를 입력해 주세요."
+    if not is_search_hash_secret_configured():
+        return "고객 검색 설정이 준비되지 않았습니다. 운영자에게 문의해 주세요."
+    return None
+
+
 def _restore_saved_insurance_records_if_needed(entry: dict[str, Any]) -> bool:
     """SQLite에 저장된 보험 원부를 FLOW_STORE에 복원(CODEF 미호출)."""
     if entry.get("insurance_source") == "saved_imported" and entry.get("insurance_records"):
@@ -3141,6 +3324,9 @@ def _restore_saved_insurance_records_if_needed(entry: dict[str, Any]) -> bool:
         and str(entry.get("insurance_stage") or "") in active_contract_stages
     ):
         return False
+    key = str(entry.get("customer_key") or "").strip()
+    if key:
+        return _apply_saved_insurance_by_customer_key(entry, key)
     customer = entry.get("customer") or {}
     if not is_search_hash_secret_configured():
         return False
@@ -3459,6 +3645,7 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
         ),
         "hide_insurance_codf_start": entry.get("insurance_source") == "saved_imported",
         "prepared_insurance_demo": _use_prepared_demo_insurance(),
+        "hospital_kakao_pending": entry.get("hospital_kakao_pending"),
         "show_insurance_contract_retry": _should_show_insurance_contract_retry(entry),
         "credit4u_debug": credit4u_debug,
         "credit4u_secure_no": secure_no_view,
@@ -3515,13 +3702,17 @@ def customer_start_redirect():
 
 
 @app.get("/customer/chat", response_class=HTMLResponse)
-def customer_chat(request: Request):
+def customer_chat(
+    request: Request,
+    auto_claim: str | None = None,
+):
     """고객용 채팅형 접수 UI (동의 → 정보입력 → 요약, 데모)."""
     return templates.TemplateResponse(
         request,
         "customer_chat.html",
         {
             "back_url": "/",
+            "prompt_auto_claim": (auto_claim or "").strip() == "1",
         },
     )
 
@@ -3596,254 +3787,405 @@ def _create_customer_find_flow(intake: dict[str, Any]) -> str:
     return new_id
 
 
-def _customer_find_status_message(entry: dict[str, Any]) -> tuple[str, str]:
-    """고객용 진행 상태 키·표시 문구."""
+_CUSTOMER_FIND_KAKAO_SENT_MESSAGE = (
+    "카카오 인증 요청이 발송되었습니다. 휴대폰에서 인증을 완료해 주세요."
+)
+_CUSTOMER_FIND_KAKAO_HINT = (
+    "휴대폰에서 인증을 완료한 뒤 아래 버튼을 눌러주세요."
+)
+
+
+def _customer_find_ai_ready(entry: dict[str, Any]) -> bool:
+    ai = entry.get("ai_analysis_result")
+    return isinstance(ai, dict) and bool((ai or {}).get("categories"))
+
+
+def _customer_find_all_ready(entry: dict[str, Any]) -> bool:
+    return (
+        entry.get("medical_status") == "completed"
+        and entry.get("insurance_status") == "completed"
+        and _customer_find_ai_ready(entry)
+    )
+
+
+def _customer_find_init_demo_flow(entry: dict[str, Any]) -> None:
+    """고객용 시연: 실제 CODEF 호출 없이 카카오 인증 UI만 시뮬레이션."""
+    entry["customer_find"] = True
+    entry["customer_demo_auth_flow"] = True
+    entry["realtime_codef_call_skipped"] = True
+    entry["codef_realtime_call_skipped"] = True
+
+
+def _customer_find_status_message(entry: dict[str, Any]) -> dict[str, Any]:
+    """고객용 진행 상태(카카오 인증 시연 흐름)."""
+    phase = str(entry.get("customer_find_phase") or "saving")
+    presets: dict[str, dict[str, Any]] = {
+        "saving": {
+            "phase": "saving",
+            "message": "고객정보 저장 중",
+            "subtitle": None,
+            "auth_action": None,
+            "auth_button_label": None,
+        },
+        "medical_auth_waiting": {
+            "phase": "medical_auth_waiting",
+            "message": _CUSTOMER_FIND_KAKAO_SENT_MESSAGE,
+            "subtitle": "진료내역 조회를 위해 카카오 인증을 요청합니다.",
+            "auth_action": "confirm_medical_auth",
+            "auth_button_label": "진료내역 인증 완료",
+        },
+        "medical_loading": {
+            "phase": "medical_loading",
+            "message": "잠시만 기다려 주세요.",
+            "subtitle": "진료내역을 확인하고 있습니다.",
+            "auth_action": None,
+            "auth_button_label": None,
+        },
+        "medical_failed": {
+            "phase": "medical_failed",
+            "message": "진료내역을 가져오지 못했습니다. 다시 시도해 주세요.",
+            "subtitle": None,
+            "auth_action": "confirm_medical_auth",
+            "auth_button_label": "진료내역 인증 완료 다시 시도",
+        },
+        "medical_done": {
+            "phase": "medical_done",
+            "message": "진료내역을 가져왔습니다.",
+            "subtitle": None,
+            "auth_action": None,
+            "auth_button_label": None,
+        },
+        "insurance_auth_waiting": {
+            "phase": "insurance_auth_waiting",
+            "message": "보험가입이력 조회를 위해 카카오 인증을 요청합니다.",
+            "subtitle": "진료내역을 가져왔습니다.",
+            "auth_action": "confirm_insurance_auth",
+            "auth_button_label": "보험가입이력 인증 완료",
+        },
+        "insurance_loading": {
+            "phase": "insurance_loading",
+            "message": "잠시만 기다려 주세요.",
+            "subtitle": "보험가입이력을 확인하고 있습니다.",
+            "auth_action": None,
+            "auth_button_label": None,
+        },
+        "insurance_failed": {
+            "phase": "insurance_failed",
+            "message": "보험가입이력을 가져오지 못했습니다. 다시 시도해 주세요.",
+            "subtitle": None,
+            "auth_action": "confirm_insurance_auth",
+            "auth_button_label": "보험가입이력 인증 완료 다시 시도",
+        },
+        "insurance_done": {
+            "phase": "insurance_done",
+            "message": "보험가입이력을 가져왔습니다.",
+            "subtitle": None,
+            "auth_action": None,
+            "auth_button_label": None,
+        },
+        "ai_preparing": {
+            "phase": "ai_preparing",
+            "message": "AI 분석 결과를 준비하고 있습니다.",
+            "subtitle": "보험가입이력을 가져왔습니다.",
+            "auth_action": None,
+            "auth_button_label": None,
+        },
+        "complete": {
+            "phase": "complete",
+            "message": "AI 분석 결과를 준비했습니다.",
+            "subtitle": "보험가입이력을 가져왔습니다.",
+            "auth_action": None,
+            "auth_button_label": None,
+        },
+        "failed": {
+            "phase": "failed",
+            "message": "처리 중 오류가 발생했습니다. 다시 시도해 주세요.",
+            "subtitle": None,
+            "auth_action": "retry",
+            "auth_button_label": "다시 시도",
+        },
+    }
     if entry.get("customer_find_error"):
-        return "failed", str(entry.get("customer_find_error") or "처리 중 오류가 발생했습니다.")
-    ms = str(entry.get("medical_status") or "pending")
-    ins = str(entry.get("insurance_status") or "pending")
-    if entry.get("customer_find_phase") == "complete" or (
-        ms == "completed"
-        and ins == "completed"
-        and isinstance(entry.get("ai_analysis_result"), dict)
-    ):
-        return "complete", "결과 정리 중"
-    if ms == "pending":
-        return "medical_prepare", "진료내역 조회 준비 중"
-    if ms in ("waiting_auth", "waiting_auth_debug_needed"):
-        return "auth_waiting", "인증 확인 중"
-    if ms == "failed":
-        return "failed", str(entry.get("medical_message") or "진료내역 조회에 실패했습니다.")
-    if ms != "completed":
-        if entry.get("second_status") == "in_progress":
-            return "medical_fetching", "진료내역 가져오는 중"
-        return "auth_request", "본인인증 요청 중"
-    if ins == "pending":
-        return "insurance_prepare", "보험가입이력 조회 준비 중"
-    if ins == "in_progress":
-        return "insurance_fetching", "보험가입이력 가져오는 중"
-    if ins == "failed":
-        return "failed", str(
-            entry.get("insurance_message") or "보험가입이력 조회에 실패했습니다."
+        err_phase = phase if phase in presets else "failed"
+        ui_err = dict(presets.get(err_phase, presets["failed"]))
+        ui_err["message"] = str(
+            entry.get("customer_find_error") or ui_err.get("message") or ""
         )
-    if ins != "completed":
-        return "insurance_fetching", "보험가입이력 가져오는 중"
-    if not isinstance(entry.get("ai_analysis_result"), dict):
-        return "ai_preparing", "결과 정리 중"
-    return "complete", "조회가 완료되었습니다."
+        return ui_err
+    if entry.get("customer_find_completed") or _customer_find_all_ready(entry):
+        return dict(presets["complete"])
+    if phase in presets:
+        return presets[phase]
+    return presets["saving"]
+
+
+def _customer_find_debug_status(entry: dict[str, Any]) -> dict[str, str]:
+    def _yn(value: Any) -> str:
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        return "—"
+
+    return {
+        "customer_demo_auth_flow": _yn(entry.get("customer_demo_auth_flow")),
+        "realtime_codef_call_skipped": _yn(entry.get("realtime_codef_call_skipped")),
+        "prepared_medical_loaded": _yn(entry.get("prepared_medical_loaded")),
+        "prepared_insurance_loaded": _yn(entry.get("prepared_insurance_loaded")),
+    }
 
 
 def _customer_find_status_payload(flow_id: str, entry: dict[str, Any]) -> dict[str, Any]:
-    phase_key, message = _customer_find_status_message(entry)
+    ui = _customer_find_status_message(entry)
+    phase_key = str(ui.get("phase") or "saving")
+    message = str(ui.get("message") or "")
+    subtitle = ui.get("subtitle")
     ms = entry.get("medical_status") or "pending"
     ins = entry.get("insurance_status") or "pending"
     counts = entry.get("medical_result_counts") or {}
-    ai_ready = isinstance(entry.get("ai_analysis_result"), dict) and bool(
-        (entry.get("ai_analysis_result") or {}).get("categories")
-    )
-    done = (
-        ms == "completed"
-        and ins == "completed"
-        and ai_ready
-        and phase_key != "failed"
-    )
+    ai_ready = _customer_find_ai_ready(entry)
+    failed_phases = frozenset({"failed", "medical_failed", "insurance_failed"})
+    failed = phase_key in failed_phases or bool(entry.get("customer_find_error"))
+    done = _customer_find_all_ready(entry) and not failed
     if done:
         phase_key = "complete"
-        message = "조회가 완료되었습니다."
+        message = str(ui.get("message") or "AI 분석 결과를 준비했습니다.")
+        subtitle = ui.get("subtitle") or "보험가입이력을 가져왔습니다."
+        ui["auth_action"] = None
+        ui["auth_button_label"] = None
+    auth_action = ui.get("auth_action")
+    auth_button_label = ui.get("auth_button_label")
+    show_auth_button = bool(auth_action and auth_button_label and not done)
     return {
         "flow_id": flow_id,
         "phase": phase_key,
+        "stage": phase_key,
         "message": message,
+        "subtitle": subtitle,
+        "kakao_hint": _CUSTOMER_FIND_KAKAO_HINT,
         "medical_status": ms,
         "insurance_status": ins,
         "medical_completed": ms == "completed",
         "insurance_completed": ins == "completed",
         "ai_ready": ai_ready,
         "done": done,
-        "needs_auth_confirm": ms in ("waiting_auth", "waiting_auth_debug_needed")
-        and not DEMO_MODE,
-        "failed": phase_key == "failed",
+        "needs_auth_confirm": show_auth_button,
+        "show_auth_button": show_auth_button,
+        "show_button": show_auth_button,
+        "auth_action": auth_action,
+        "auth_button_label": auth_button_label,
+        "button_label": auth_button_label,
+        "next_action": auth_action,
+        "failed": failed,
+        "stopped": failed,
+        "show_retry": failed and show_auth_button,
+        "awaiting_user_action": show_auth_button,
         "medical_counts": {
             "basic": int(counts.get("basic") or 0),
             "detail": int(counts.get("detail") or 0),
             "prescribe": int(counts.get("prescribe") or 0),
         },
+        "debug": _customer_find_debug_status(entry),
     }
+
+
+def _customer_find_api_response(
+    flow_id: str,
+    entry: dict[str, Any] | None,
+    *,
+    ok: bool = True,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """고객 find API 공통 응답(ok·stage·message·버튼 필드 항상 포함)."""
+    if not entry:
+        return {
+            "ok": False,
+            "flow_id": flow_id,
+            "error": error or "flow_not_found",
+            "stage": None,
+            "message": error or "flow_not_found",
+            "subtitle": None,
+            "show_button": False,
+            "button_label": None,
+            "next_action": None,
+            "debug": {},
+            "status": None,
+        }
+    status = _customer_find_status_payload(flow_id, entry)
+    return {
+        "ok": ok and not error,
+        "flow_id": flow_id,
+        "error": error,
+        "stage": status.get("stage"),
+        "message": status.get("message"),
+        "subtitle": status.get("subtitle"),
+        "show_button": status.get("show_button"),
+        "button_label": status.get("button_label"),
+        "next_action": status.get("next_action"),
+        "debug": status.get("debug"),
+        "status": status,
+    }
+
+
+def _customer_find_load_prepared_medical(flow_id: str, entry: dict[str, Any]) -> bool:
+    """준비된 진료내역을 현재 고객 기준으로 로드(CODEF 미호출)."""
+    entry["customer_find_phase"] = "medical_loading"
+    for stale in ("waiting_auth", "waiting_auth_debug_needed", "failed", "rate_limited"):
+        if entry.get("medical_status") == stale:
+            entry["medical_status"] = "pending"
+            entry["second_status"] = "idle"
+            break
+    loaded = _restore_prepared_medical_for_flow(flow_id, entry)
+    if not loaded:
+        loaded = _apply_saved_medical_records(flow_id, entry)
+    if entry.get("medical_status") != "completed":
+        return False
+    entry["hira_stage"] = "completed"
+    entry["prepared_medical_loaded"] = True
+    entry["medical_message"] = "진료내역을 가져왔습니다."
+    entry["customer_find_phase"] = "medical_done"
+    return True
+
+
+def _customer_find_load_prepared_insurance(flow_id: str, entry: dict[str, Any]) -> bool:
+    """준비된 보험가입이력 원부를 현재 고객 기준으로 저장(CODEF·보험사 API 미호출)."""
+    entry["customer_find_phase"] = "insurance_loading"
+    try:
+        _provision_finals_credit4u_credentials(entry)
+        _apply_prepared_demo_insurance_records(flow_id, entry)
+        entry["insurance_source"] = INSURANCE_FLOW_SOURCE_PREPARED_DEMO
+    except FileNotFoundError:
+        entry["customer_find_error"] = PREPARED_INSURANCE_NOT_FOUND_MESSAGE
+        entry["customer_find_phase"] = "insurance_failed"
+        entry["insurance_status"] = "failed"
+        return False
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        entry["customer_find_error"] = (
+            str(exc) or "보험가입이력을 가져오지 못했습니다. 다시 시도해 주세요."
+        )
+        entry["customer_find_phase"] = "insurance_failed"
+        entry["insurance_status"] = "failed"
+        return False
+    except Exception:
+        logger.exception(
+            "customer find prepared insurance load failed flow_id=%s", flow_id
+        )
+        entry["customer_find_error"] = (
+            "보험가입이력을 가져오지 못했습니다. 다시 시도해 주세요."
+        )
+        entry["customer_find_phase"] = "insurance_failed"
+        entry["insurance_status"] = "failed"
+        return False
+    if entry.get("insurance_status") != "completed":
+        entry["customer_find_error"] = (
+            "보험가입이력을 가져오지 못했습니다. 다시 시도해 주세요."
+        )
+        entry["customer_find_phase"] = "insurance_failed"
+        entry["insurance_status"] = "failed"
+        return False
+    entry["insurance_stage"] = "completed"
+    entry["prepared_insurance_loaded"] = True
+    entry["insurance_message"] = "보험가입이력을 가져왔습니다."
+    entry["customer_find_phase"] = "insurance_done"
+    return True
+
+
+def _customer_find_run_ai_analysis(flow_id: str, entry: dict[str, Any]) -> bool:
+    entry["customer_find_phase"] = "ai_preparing"
+    if _customer_find_ai_ready(entry):
+        entry["customer_find_phase"] = "complete"
+        entry["customer_find_completed"] = True
+        return True
+    try:
+        execute_ai_claim_analysis(
+            entry,
+            restore_medical_fn=_apply_saved_medical_records,
+            restore_insurance_fn=_restore_saved_insurance_records_if_needed,
+            use_openai=True,
+        )
+    except Exception:
+        logger.exception("customer find ai analysis failed flow_id=%s", flow_id)
+        entry["customer_find_error"] = "AI 분석 준비 중 오류가 발생했습니다."
+        entry["customer_find_phase"] = "failed"
+        return False
+    entry["customer_find_phase"] = "complete"
+    entry["customer_find_completed"] = True
+    return True
+
+
+def _customer_find_confirm_medical_auth(flow_id: str, entry: dict[str, Any]) -> None:
+    _customer_find_init_demo_flow(entry)
+    entry.pop("customer_find_error", None)
+    if not _customer_find_load_prepared_medical(flow_id, entry):
+        entry["medical_status"] = "failed"
+        entry["customer_find_error"] = (
+            "진료내역을 가져오지 못했습니다. 다시 시도해 주세요."
+        )
+        entry["customer_find_phase"] = "medical_failed"
+        return
+    entry.pop("customer_find_error", None)
+    entry["customer_find_phase"] = "insurance_auth_waiting"
+
+
+def _customer_find_confirm_insurance_auth(flow_id: str, entry: dict[str, Any]) -> None:
+    _customer_find_init_demo_flow(entry)
+    entry.pop("customer_find_error", None)
+    if entry.get("medical_status") != "completed":
+        entry["customer_find_error"] = "진료내역을 먼저 완료해 주세요."
+        entry["customer_find_phase"] = "medical_failed"
+        return
+    if not _customer_find_load_prepared_insurance(flow_id, entry):
+        return
+    entry.pop("customer_find_error", None)
+    _customer_find_run_ai_analysis(flow_id, entry)
 
 
 def _customer_find_advance(
     flow_id: str,
     entry: dict[str, Any],
     *,
+    action: str | None = None,
     confirm_auth: bool = False,
 ) -> None:
-    """병원용 진료·보험 조회 로직을 고객용 JSON 흐름에서 한 단계 진행."""
-    entry["customer_find"] = True
-    ms = entry.get("medical_status") or "pending"
+    """고객용: 버튼 클릭 시에만 다음 단계(실시간 CODEF·자동 advance 없음)."""
+    _customer_find_init_demo_flow(entry)
 
-    if ms == "pending":
-        if DEMO_MODE:
-            _request_hira_auth_demo(flow_id)
-            _apply_hira_waiting_auth(
-                entry,
-                result={"code": "DEMO", "message": "데모 모드"},
-                extracted={
-                    "continue2Way": True,
-                    "method": "simpleAuth",
-                    "twoWayInfo": {
-                        "jobIndex": 0,
-                        "threadIndex": 0,
-                        "jti": "demo",
-                        "twoWayTimestamp": 0,
-                    },
-                    "twoWayInfo_found": True,
-                    "root_keys": [],
-                    "data_keys": [],
-                },
-            )
-        else:
-            try:
-                _request_hira_auth_codef(flow_id, entry)
-            except CodefClientError as exc:
-                code = exc.code or "CLIENT_ERROR"
-                if _is_codef_daily_limit_exceeded(code):
-                    _apply_hira_rate_limited(
-                        entry,
-                        result_code=code,
-                        result_message=exc.message,
-                        phase="first",
-                    )
-                else:
-                    _apply_hira_auth_failed(
-                        entry,
-                        result_code=code,
-                        result_message=exc.message,
-                        user_message=exc.message,
-                    )
-        return
-
-    if ms in ("waiting_auth", "waiting_auth_debug_needed"):
-        if not confirm_auth and not DEMO_MODE:
-            return
-        if DEMO_MODE:
-            if entry.get("medical_status") != "waiting_auth":
-                entry["medical_status"] = "failed"
-                entry["medical_message"] = "인증 및 조회 순서가 올바르지 않습니다."
-            else:
-                _complete_hira_demo(entry)
-                _persist_medical_records_to_sqlite(flow_id, entry)
-        else:
-            second_status = entry.get("second_status") or "idle"
-            if entry.get("medical_status") == "completed" or second_status == "completed":
-                return
-            if second_status == "in_progress":
-                return
-            two_way_info = entry.get("two_way_info")
-            if not two_way_info:
-                entry["medical_message"] = (
-                    "인증 정보가 없습니다. 잠시 후 다시 시도해 주세요."
-                )
-                return
-            first_payload = _get_hira_first_payload(flow_id, entry)
-            entry["second_status"] = "in_progress"
-            try:
-                api_result = post_hira_medical_second(first_payload, two_way_info)
-                result_code = str(api_result.get("result_code") or "")
-                result_message = str(api_result.get("result_message") or "")
-                if _is_codef_daily_limit_exceeded(result_code):
-                    _apply_hira_rate_limited(
-                        entry,
-                        result_code=result_code,
-                        result_message=result_message,
-                        phase="second",
-                    )
-                    return
-                parsed = api_result.get("parsed")
-                if parsed is None or not api_result.get("ok"):
-                    _apply_hira_second_failed(
-                        entry,
-                        result_code=result_code or "ERROR",
-                        result_message=result_message,
-                        user_message=result_message
-                        or "진료내역 조회에 실패했습니다.",
-                    )
-                    return
-                lists = extract_hira_medical_lists(parsed)
-                _apply_hira_second_completed(
-                    entry,
-                    lists=lists,
-                    result_code=result_code,
-                    result_message=result_message,
-                )
-                _persist_medical_records_to_sqlite(flow_id, entry)
-            except CodefClientError as exc:
-                code = exc.code or "CLIENT_ERROR"
-                if _is_codef_daily_limit_exceeded(code):
-                    _apply_hira_rate_limited(
-                        entry,
-                        result_code=code,
-                        result_message=exc.message,
-                        phase="second",
-                    )
-                else:
-                    _apply_hira_second_failed(
-                        entry,
-                        result_code=code,
-                        result_message=exc.message,
-                        user_message=exc.message,
-                    )
-            except Exception:
-                logger.exception("customer find hira second failed flow_id=%s", flow_id)
-                _apply_hira_second_failed(
-                    entry,
-                    result_code="ERROR",
-                    result_message="unexpected",
-                    user_message="진료내역 조회 중 오류가 발생했습니다.",
-                )
-        return
-
-    if ms != "completed":
-        return
-
-    ins = entry.get("insurance_status") or "pending"
-    customer = entry.get("customer") or {}
-    if ins == "pending":
-        if _customer_has_stored_insurance_records(customer):
-            _restore_saved_insurance_records_if_needed(entry)
-            return
-        if _demo_complete_allowed():
-            entry["insurance_status"] = "in_progress"
-            _apply_insurance_sample_complete(entry)
-            return
-        try:
-            _request_insurance_history_start(flow_id, entry)
-        except (Credit4uConfigError, ValueError) as exc:
-            entry["insurance_status"] = "failed"
-            entry["insurance_message"] = str(exc) or "보험가입이력 조회를 시작할 수 없습니다."
-        return
-
-    if ins == "in_progress":
-        if _demo_complete_allowed():
-            _apply_insurance_sample_complete(entry)
-            return
-        stage = str(entry.get("insurance_stage") or "")
-        if stage == "register_completed" and entry.get("credit4u_register_completed"):
-            _on_register_completed(flow_id, entry)
-        return
-
-    if ins == "completed" and not isinstance(entry.get("ai_analysis_result"), dict):
-        try:
-            execute_ai_claim_analysis(
-                entry,
-                restore_medical_fn=_apply_saved_medical_records,
-                restore_insurance_fn=_restore_saved_insurance_records_if_needed,
-                use_openai=True,
-            )
-        except Exception:
-            logger.exception("customer find ai analysis failed flow_id=%s", flow_id)
-            entry["customer_find_error"] = "AI 분석 준비 중 오류가 발생했습니다."
+    if entry.get("customer_find_completed") or _customer_find_all_ready(entry):
+        entry["customer_find_completed"] = True
         entry["customer_find_phase"] = "complete"
         return
+
+    act = (action or "").strip()
+    if not act and confirm_auth:
+        phase = str(entry.get("customer_find_phase") or "")
+        if phase == "medical_auth_waiting":
+            act = "confirm_medical_auth"
+        elif phase == "insurance_auth_waiting":
+            act = "confirm_insurance_auth"
+
+    if act == "confirm_medical_auth":
+        _customer_find_confirm_medical_auth(flow_id, entry)
+        return
+    if act == "confirm_insurance_auth":
+        _customer_find_confirm_insurance_auth(flow_id, entry)
+        return
+    if act == "retry":
+        entry.pop("customer_find_error", None)
+        phase = str(entry.get("customer_find_phase") or "")
+        if entry.get("medical_status") != "completed" or phase == "medical_failed":
+            entry["medical_status"] = "pending"
+            entry["customer_find_phase"] = "medical_auth_waiting"
+        elif entry.get("insurance_status") != "completed" or phase == "insurance_failed":
+            entry["insurance_status"] = "pending"
+            entry["customer_find_phase"] = "insurance_auth_waiting"
+        else:
+            _customer_find_run_ai_analysis(flow_id, entry)
+        return
+
+    phase = str(entry.get("customer_find_phase") or "saving")
+    if phase == "saving":
+        entry["customer_find_phase"] = "medical_auth_waiting"
+    # 그 외: 사용자 버튼 입력 대기(상태 변경 없음)
 
 
 def _customer_find_medical_rows_customer(
@@ -3902,7 +4244,7 @@ def _customer_find_ai_summary_customer(entry: dict[str, Any]) -> dict[str, Any]:
     totals = ai.get("totals") if isinstance(ai.get("totals"), dict) else {}
     categories = ai.get("categories") if isinstance(ai.get("categories"), dict) else {}
     priority: list[dict[str, str]] = []
-    for key in ("high_potential", "need_review", "need_documents", "low_potential"):
+    for key in ("high_potential", "need_review", "need_documents"):
         for item in (categories.get(key) or [])[:5]:
             if not isinstance(item, dict):
                 continue
@@ -3930,20 +4272,27 @@ def _customer_find_ai_summary_customer(entry: dict[str, Any]) -> dict[str, Any]:
     if not docs:
         docs = ["진료비 영수증", "진단서(필요 시)", "보험금 청구서"]
     detail = ai.get("summary_text") or ai.get("analysis_summary") or ""
+    high_items = [
+        c for c in (categories.get("high_potential") or []) if isinstance(c, dict)
+    ]
+    detected = ai.get("detected_actual_loss_products") or []
+    priority_review_display = str(
+        totals.get("high_estimated_display")
+        or totals.get("total_estimated_display")
+        or "—"
+    )
     return {
-        "candidate_count": int(totals.get("total_candidate_count") or 0),
-        "estimated_display": str(
-            totals.get("total_estimated_display")
-            or totals.get("total_candidate_base_display")
-            or "—"
+        "candidate_count": int(totals.get("high_count") or len(high_items) or 0),
+        "high_count": len(high_items),
+        "estimated_display": priority_review_display,
+        "priority_review_display": priority_review_display,
+        "has_actual_loss": bool(detected),
+        "actual_loss_label": (
+            "실손보험 확인됨" if detected else "실손보험 추가 확인 필요"
         ),
         "priority_visits": priority[:5],
         "documents_needed": docs[:6],
-        "detail_collapsed": str(detail)[:2000] if detail else "",
-        "disclaimer": (
-            "본 화면은 청구 가능성이 있는 항목·검토가 필요한 항목을 안내하며, "
-            "보험금 지급을 확정하는 결과는 아닙니다."
-        ),
+        "disclaimer": "보험금 지급을 확정하는 결과는 아닙니다.",
     }
 
 
@@ -3963,6 +4312,124 @@ def _customer_find_results_payload(flow_id: str, entry: dict[str, Any]) -> dict[
         },
         "ai": _customer_find_ai_summary_customer(entry),
     }
+
+
+def _purge_customer_find_flow_store(
+    *,
+    flow_id: str | None,
+    customer_key: str | None,
+) -> int:
+    """고객 탈퇴: FLOW_STORE·임시 draft 중 고객 find 항목만 제거(원부 파일 미접촉)."""
+    fid = _canonical_flow_id(flow_id or "")
+    key = str(customer_key or "").strip()
+    removed = 0
+    for store_id in list(FLOW_STORE.keys()):
+        entry = FLOW_STORE.get(store_id)
+        if not isinstance(entry, dict):
+            continue
+        if fid and store_id == fid:
+            FLOW_STORE.pop(store_id, None)
+            removed += 1
+            continue
+        if not entry.get("customer_find"):
+            continue
+        if key and str(entry.get("customer_key") or "").strip() == key:
+            FLOW_STORE.pop(store_id, None)
+            removed += 1
+    if fid or key:
+        draft_removed = len(CUSTOMER_CHAT_DRAFT_STORE)
+        CUSTOMER_CHAT_DRAFT_STORE.clear()
+        removed += draft_removed
+    return removed
+
+
+def _resolve_customer_withdraw_keys(
+    flow_id: str | None,
+    entry: dict[str, Any] | None,
+) -> tuple[str, str]:
+    """flow_id·FLOW_STORE 항목에서 탈퇴 대상 customer_key 확정."""
+    fid = _canonical_flow_id(flow_id or "")
+    customer_key = ""
+    if isinstance(entry, dict):
+        customer_key = str(entry.get("customer_key") or "").strip()
+        customer = entry.get("customer") if isinstance(entry.get("customer"), dict) else {}
+        if not customer_key and customer:
+            try:
+                customer_key = make_customer_key(customer)
+            except (ValueError, PersistentStoreConfigError):
+                customer_key = ""
+    if not customer_key and fid:
+        looked_up = lookup_customer_key_for_flow_id(fid)
+        if looked_up:
+            customer_key = looked_up
+    return fid, customer_key
+
+
+@app.post("/api/customer/withdraw")
+async def api_customer_withdraw(request: Request):
+    """고객 탈퇴 — 연결 운영 데이터 삭제(준비 원부·백업 파일 보존)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    flow_id = _canonical_flow_id(str(body.get("flow_id") or ""))
+    entry = FLOW_STORE.get(flow_id) if flow_id else None
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    if entry is not None and not entry.get("customer_find"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "고객용 지난 보험금 찾기 흐름에서만 탈퇴할 수 있습니다.",
+            },
+            status_code=400,
+        )
+    fid, customer_key = _resolve_customer_withdraw_keys(flow_id, entry)
+    if not customer_key and payload:
+        try:
+            customer_key = make_customer_key(_customer_intake_to_flow_customer(payload))
+        except (ValueError, PersistentStoreConfigError):
+            customer_key = ""
+    if not customer_key:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "삭제할 고객 정보를 찾을 수 없습니다.",
+            },
+            status_code=400,
+        )
+    try:
+        withdraw_customer_operational_data(customer_key=customer_key, flow_id=fid or None)
+        _purge_customer_find_flow_store(flow_id=fid or None, customer_key=customer_key)
+    except InsuranceSourceProtectionError:
+        logger.warning(
+            "customer withdraw blocked by source protection flow_id=%s",
+            fid or "—",
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "탈퇴 처리 중 보호된 원부에 접근할 수 없어 중단되었습니다.",
+            },
+            status_code=400,
+        )
+    except Exception:
+        logger.exception("customer withdraw failed flow_id=%s", fid or "—")
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "탈퇴 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            },
+            status_code=200,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": "탈퇴가 완료되었습니다.",
+            "redirect_url": "/",
+        }
+    )
 
 
 @app.post("/api/customer/auto-claim/save")
@@ -4023,9 +4490,10 @@ async def api_customer_find_start(request: Request):
         )
     flow_id = _create_customer_find_flow(intake)
     entry = FLOW_STORE[flow_id]
+    _customer_find_init_demo_flow(entry)
     entry["customer_find_phase"] = "saving"
-    status = _customer_find_status_payload(flow_id, entry)
-    return JSONResponse({"ok": True, "flow_id": flow_id, "status": status})
+    _customer_find_advance(flow_id, entry)
+    return JSONResponse(_customer_find_api_response(flow_id, entry))
 
 
 @app.post("/api/customer/find/advance")
@@ -4039,12 +4507,33 @@ async def api_customer_find_advance(request: Request):
         body = {}
     flow_id = _canonical_flow_id(str(body.get("flow_id") or ""))
     if not flow_id or flow_id not in FLOW_STORE:
-        return JSONResponse({"ok": False, "error": "flow_not_found"}, status_code=404)
+        return JSONResponse(
+            _customer_find_api_response(flow_id, None, ok=False, error="flow_not_found"),
+            status_code=404,
+        )
     entry = FLOW_STORE[flow_id]
+    action = str(body.get("action") or "").strip() or None
     confirm_auth = bool(body.get("confirm_auth"))
-    _customer_find_advance(flow_id, entry, confirm_auth=confirm_auth)
-    status = _customer_find_status_payload(flow_id, entry)
-    return JSONResponse({"ok": True, "status": status})
+    try:
+        _customer_find_advance(
+            flow_id,
+            entry,
+            action=action,
+            confirm_auth=confirm_auth,
+        )
+    except Exception:
+        logger.exception("customer find advance failed flow_id=%s", flow_id)
+        entry["customer_find_error"] = (
+            entry.get("customer_find_error") or PREPARED_INSURANCE_NOT_FOUND_MESSAGE
+        )
+        if str(entry.get("customer_find_phase") or "") not in (
+            "insurance_failed",
+            "medical_failed",
+            "failed",
+        ):
+            entry["customer_find_phase"] = "insurance_failed"
+        entry["insurance_status"] = "failed"
+    return JSONResponse(_customer_find_api_response(flow_id, entry))
 
 
 @app.get("/api/customer/find/status")
@@ -4085,7 +4574,7 @@ def hospital_flow_start(request: Request):
         {
             "current_step": 1,
             "flow_id": None,
-            "hospital_flow_first_url": "/hospital/customer",
+            "hospital_flow_first_url": "/hospital/customer-lookup",
             "debug_panel": False,
             **_printer_download_template_context(),
         },
@@ -4200,6 +4689,177 @@ async def api_print_receiver_upload(
             "message": message,
             "duplicate_note": duplicate_note,
         }
+    )
+
+
+@app.get("/hospital/customer-lookup", response_class=HTMLResponse)
+def hospital_customer_lookup_get(request: Request):
+    """병원용 고객등록검사 — 이름·주민으로 기존 고객·저장 자료 확인."""
+    result = str(request.query_params.get("result") or "").strip()
+    lookup_message = None
+    lookup_level = None
+    if result == "not_found":
+        lookup_message = "등록된 고객 자료가 없습니다."
+        lookup_level = "info"
+    elif result == "incomplete":
+        lookup_message = (
+            "아직 고객용 조회 자료가 없습니다. 병원용 절차로 진행해 주세요."
+        )
+        lookup_level = "warn"
+    return templates.TemplateResponse(
+        request,
+        "hospital_customer_lookup.html",
+        {
+            "current_step": 2,
+            "flow_id": None,
+            "debug_panel": False,
+            "form_error": None,
+            "lookup_message": lookup_message,
+            "lookup_level": lookup_level,
+            **_printer_download_template_context(),
+        },
+    )
+
+
+@app.post("/hospital/customer-lookup")
+def hospital_customer_lookup_post(
+    request: Request,
+    name: str = Form(""),
+    identity: str = Form(""),
+):
+    err = _hospital_lookup_form_error(name, identity)
+    if err:
+        return templates.TemplateResponse(
+            request,
+            "hospital_customer_lookup.html",
+            {
+                "current_step": 2,
+                "flow_id": None,
+                "debug_panel": False,
+                "form_error": err,
+                "lookup_message": None,
+                "lookup_level": None,
+                "customer_name_value": (name or "").strip(),
+                **_printer_download_template_context(),
+            },
+        )
+    identity_digits = re.sub(r"\D", "", identity or "")[:13]
+    found = lookup_customer_by_name_identity(name, identity_digits)
+    if not found:
+        return RedirectResponse(
+            "/hospital/customer-lookup?result=not_found", status_code=303
+        )
+    if found.get("has_medical") and found.get("has_insurance"):
+        ck = quote(str(found["customer_key"]), safe="")
+        return RedirectResponse(
+            f"/hospital/customer-existing-result?customer_key={ck}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        "/hospital/customer-lookup?result=incomplete", status_code=303
+    )
+
+
+@app.get("/hospital/customer-existing-result", response_class=HTMLResponse)
+def hospital_customer_existing_result_get(
+    request: Request, customer_key: str | None = None
+):
+    """고객용에서 완료된 진료·보험 저장본 바로 확인(CODEF 미호출)."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return RedirectResponse("/hospital/customer-lookup", status_code=303)
+    snap = _hospital_entry_from_customer_key(key)
+    if not snap:
+        return RedirectResponse(
+            "/hospital/customer-lookup?result=not_found", status_code=303
+        )
+    flow_id, entry = snap
+    med_ok = bool(_medical_records_basic_all(entry))
+    ins_ok = bool(entry.get("insurance_records") or entry.get("insured_summary"))
+    if not med_ok or not ins_ok:
+        return RedirectResponse(
+            "/hospital/customer-lookup?result=incomplete", status_code=303
+        )
+    customer = entry.get("customer") or {}
+    return templates.TemplateResponse(
+        request,
+        "hospital_customer_existing_result.html",
+        {
+            "current_step": 2,
+            "flow_id": flow_id,
+            "customer_key": key,
+            "customer_name": (customer.get("name") or "—").strip() or "—",
+            "debug_panel": False,
+            "has_medical": med_ok,
+            "has_insurance": ins_ok,
+            **_printer_download_template_context(),
+        },
+    )
+
+
+@app.get("/hospital/customer-existing-result/medical", response_class=HTMLResponse)
+def hospital_customer_existing_medical(
+    request: Request, customer_key: str | None = None
+):
+    key = str(customer_key or "").strip()
+    if not key:
+        return RedirectResponse("/hospital/customer-lookup", status_code=303)
+    snap = _hospital_entry_from_customer_key(key)
+    if not snap:
+        return RedirectResponse("/hospital/customer-lookup", status_code=303)
+    flow_id, entry = snap
+    if not _medical_records_basic_all(entry):
+        return RedirectResponse(
+            "/hospital/customer-lookup?result=incomplete", status_code=303
+        )
+    ck = quote(key, safe="")
+    return templates.TemplateResponse(
+        request,
+        "medical_records_full.html",
+        {
+            "flow_id": flow_id,
+            "current_step": 2,
+            "customer_key": key,
+            "back_url": f"/hospital/customer-existing-result?customer_key={ck}",
+            "hospital_lookup_mode": True,
+            **_medical_records_view_context(entry),
+        },
+    )
+
+
+@app.get("/hospital/customer-existing-result/insurance", response_class=HTMLResponse)
+def hospital_customer_existing_insurance(
+    request: Request, customer_key: str | None = None
+):
+    key = str(customer_key or "").strip()
+    if not key:
+        return RedirectResponse("/hospital/customer-lookup", status_code=303)
+    snap = _hospital_entry_from_customer_key(key)
+    if not snap:
+        return RedirectResponse("/hospital/customer-lookup", status_code=303)
+    flow_id, entry = snap
+    insured_summary = entry.get("insured_summary")
+    if not isinstance(insured_summary, dict) or not insured_summary.get(
+        "company_groups"
+    ):
+        return RedirectResponse(
+            "/hospital/customer-lookup?result=incomplete", status_code=303
+        )
+    ck = quote(key, safe="")
+    company_groups = insured_summary.get("company_groups") or []
+    return templates.TemplateResponse(
+        request,
+        "hospital_existing_insurance.html",
+        {
+            "current_step": 2,
+            "flow_id": flow_id,
+            "customer_key": key,
+            "customer_name": str((entry.get("customer") or {}).get("name") or "—"),
+            "insured_summary": insured_summary,
+            "company_groups": company_groups,
+            "back_url": f"/hospital/customer-existing-result?customer_key={ck}",
+            "debug_panel": False,
+        },
     )
 
 
@@ -4330,6 +4990,7 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
             "hira_rate_limited": entry.get("medical_status") == "rate_limited",
             "has_prepared_medical_backup": has_prepared_medical_backup(),
             "codef_limit_debug": _codef_limit_debug_for_template(entry),
+            "hospital_kakao_pending": entry.get("hospital_kakao_pending"),
             "show_hira_modal": show_hira_modal,
             "hira_modal_step": hira_modal_step,
             **_credit4u_credentials_view_context(entry),
@@ -4408,7 +5069,12 @@ def hospital_hira_complete_auth(flow_id: str | None = None):
             entry["medical_status"] = "failed"
             entry["medical_message"] = "인증 및 조회 순서가 올바르지 않아 처리할 수 없습니다."
         else:
-            _complete_hira_demo(entry)
+            loaded = (
+                _restore_prepared_medical_for_flow(fid, entry)
+                or _apply_saved_medical_records(fid, entry)
+            )
+            if not loaded:
+                _complete_hira_demo(entry)
             _persist_medical_records_to_sqlite(fid, entry)
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
 
@@ -4502,31 +5168,25 @@ def hospital_hira_complete_auth(flow_id: str | None = None):
 
 @app.post("/hospital/hira-use-saved")
 def hospital_hira_use_saved(flow_id: str | None = None):
-    """저장된 진료내역을 FLOW_STORE에 불러와 CODEF 재인증 없이 완료 처리."""
+    """저장·준비 진료내역: 카카오 인증 안내 후 확인 시 로드."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
     if entry.get("medical_status") == "completed":
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
-    if _apply_saved_medical_records(fid, entry):
-        _apply_codef_limit_debug(
-            entry,
-            prepared_medical_loaded=bool(entry.get("codef_daily_limit_exceeded")),
-        )
-    elif _restore_prepared_medical_for_flow(fid, entry):
-        pass
-    else:
-        if entry.get("medical_status") == "rate_limited":
-            entry["medical_message"] = (
-                "준비된 진료내역 저장본을 불러오지 못했습니다. "
-                "백업 DB(data/redribbon_final_before_*.db)를 확인해 주세요."
-            )
-            _apply_codef_limit_debug(entry, prepared_medical_loaded=False)
-        else:
-            entry["medical_status"] = "pending"
-            entry["medical_message"] = "저장된 진료내역이 없습니다. 새로 조회해 주세요."
-            entry["has_saved_medical_records"] = False
+    _begin_hospital_medical_kakao_waiting(entry)
+    return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+
+
+@app.post("/hospital/hira-prepared-confirm")
+def hospital_hira_prepared_confirm(flow_id: str | None = None):
+    """카카오 인증 완료 후 준비·저장 진료내역 로드(CODEF 미호출)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    _complete_hospital_medical_prepared_load(fid, entry)
     return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
 
 
@@ -4585,16 +5245,19 @@ def hospital_insurance_request_get(
     if _debug_panel() and (debug_existing or "").strip() == "1":
         entry["debug_show_existing_account"] = True
     _restore_saved_insurance_records_if_needed(entry)
+    credential_debug = _ensure_credit4u_credentials_on_insurance_page(entry)
     if entry.get("insurance_source") != "saved_imported" and (
         entry.get("insurance_stage") == "register_completed"
         and entry.get("credit4u_register_completed")
         and not entry.get("insurance_contract_auto_started")
     ):
         _on_register_completed(fid, entry)
+    ctx = _insurance_request_context(entry, fid)
+    ctx["credential_page_debug"] = credential_debug
     return templates.TemplateResponse(
         request,
         "insurance_request.html",
-        _insurance_request_context(entry, fid),
+        ctx,
     )
 
 
@@ -4701,18 +5364,7 @@ def hospital_insurance_request_start(flow_id: str | None = None):
 
     if _use_prepared_demo_insurance():
         entry.pop("insurance_error_code", None)
-        try:
-            _request_insurance_history_start(fid, entry)
-        except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-            entry["insurance_status"] = "failed"
-            entry["insurance_stage"] = "failed"
-            entry["insurance_message"] = str(exc) or "준비된 보험가입이력을 불러오지 못했습니다."
-            entry["insurance_error_code"] = "PREPARED_INSURANCE_LOAD_FAILED"
-        except ValueError as exc:
-            entry["insurance_status"] = "failed"
-            entry["insurance_stage"] = "failed"
-            entry["insurance_message"] = str(exc) or "보험가입이력 조회를 시작할 수 없습니다."
-            entry["insurance_error_code"] = "MISSING_CREDIT4U_SECRET"
+        _begin_hospital_insurance_kakao_waiting(entry)
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
     entry["insurance_status"] = "in_progress"
@@ -4735,6 +5387,17 @@ def hospital_insurance_request_start(flow_id: str | None = None):
         entry["insurance_message"] = "고객 정보가 부족하여 보험가입이력 조회를 시작할 수 없습니다."
         entry["insurance_error_code"] = "MISSING_CUSTOMER_INFO"
 
+    return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+
+@app.post("/hospital/insurance-prepared-confirm")
+def hospital_insurance_prepared_confirm(flow_id: str | None = None):
+    """카카오 인증 완료 후 준비 보험가입이력 원부 로드(CODEF 미호출)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    _complete_hospital_insurance_prepared_load(fid, entry)
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
 

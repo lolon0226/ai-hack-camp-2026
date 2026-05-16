@@ -66,6 +66,7 @@
     </section>
 
     <section class="hospital-hira-state" aria-live="polite">
+      {% include "partials/hospital_kakao_prepared_panel.html" %}
       {% if hira_rate_limited or medical_status == "rate_limited" %}
       <div class="hospital-hira-saved-choice hospital-hira-saved-choice--top" role="region" aria-labelledby="hira-rate-limit-title">
         <h2 id="hira-rate-limit-title" class="hospital-hira-saved-choice__title">CODEF 일일 한도 초과</h2>
@@ -122,7 +123,7 @@
           class="btn btn--ghost hospital-hira-state__btn toggle-panel-btn"
           data-toggle-target="hira-page-results-panel"
           data-open-text="진료내역 결과 보기"
-          data-close-text="진료내역 결과 접기"
+          data-close-text="진료내역 접기"
           aria-expanded="false"
           aria-controls="hira-page-results-panel"
         >진료내역 결과 보기</button>
@@ -160,6 +161,7 @@
         <dl class="hospital-hira-debug__dl">
           <div class="hospital-hira-debug__row"><dt>codef_daily_limit_exceeded</dt><dd>{{ codef_limit_debug.codef_daily_limit_exceeded }}</dd></div>
           <div class="hospital-hira-debug__row"><dt>realtime_codef_call_skipped</dt><dd>{{ codef_limit_debug.realtime_codef_call_skipped }}</dd></div>
+          <div class="hospital-hira-debug__row"><dt>demo_kakao_auth_flow</dt><dd>{{ codef_limit_debug.demo_kakao_auth_flow }}</dd></div>
           <div class="hospital-hira-debug__row"><dt>prepared_medical_loaded</dt><dd>{{ codef_limit_debug.prepared_medical_loaded }}</dd></div>
           <div class="hospital-hira-debug__row"><dt>hira_stage</dt><dd>{{ hira_stage or "—" }}</dd></div>
         </dl>

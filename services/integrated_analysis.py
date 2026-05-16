@@ -39,11 +39,13 @@ _CATEGORY_KEYS = (
     "low_potential",
 )
 _CATEGORY_LABELS = {
-    "high_potential": "청구 가능성 높음",
+    "high_potential": "우선 검토 후보",
     "need_review": "검토 필요",
     "need_documents": "서류 보강 필요",
     "low_potential": "청구 가능성 낮음",
 }
+_HIGH_POTENTIAL_ESTIMATED_MIN = 30_000
+_HIGH_POTENTIAL_SELF_PAY_MIN = 50_000
 _CATEGORY_TOTAL_PREFIX: tuple[tuple[str, str], ...] = (
     ("high_potential", "high"),
     ("need_review", "review"),
@@ -1079,10 +1081,25 @@ def _is_high_priority_visit(
         token in diagnosis for token in ("상해", "골절", "탈구", "염좌", "손상")
     ):
         return True
-    if self_pay >= 50_000:
+    if self_pay >= _HIGH_POTENTIAL_SELF_PAY_MIN:
         return True
     exam_tokens = ("MRI", "CT", "초음파", "조직검사", "내시경", "PET")
     return any(token in combined for token in exam_tokens)
+
+
+def _is_outpatient_pharmacy_zero_estimated(
+    visit: dict[str, Any],
+    *,
+    estimated_amount: int,
+    hospital_type: str,
+    combined: str,
+) -> bool:
+    """외래·약국 공제 후 0원은 우선 검토 후보에서 제외."""
+    if estimated_amount > 0:
+        return False
+    if hospital_type == "pharmacy" or "약국" in combined or "조제" in combined:
+        return True
+    return False
 
 
 def _documents_category_if_needed(
@@ -1132,10 +1149,20 @@ def _enforce_candidate_category(
     return category
 
 
+def _candidate_fingerprint(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("visit_date") or row.get("date") or ""),
+        str(row.get("hospital_name") or ""),
+        str(row.get("diagnosis_name") or row.get("diagnosis") or ""),
+        str(row.get("department") or ""),
+    )
+
+
 def _classify_when_estimated_positive(
     visit: dict[str, Any],
     *,
     self_pay: int,
+    estimated: int,
     has_matched_coverage: bool,
     hospital: str,
     diagnosis: str,
@@ -1174,6 +1201,35 @@ def _classify_when_estimated_positive(
     ):
         return docs_result
 
+    if _is_outpatient_pharmacy_zero_estimated(
+        visit,
+        estimated_amount=estimated,
+        hospital_type=hospital_type,
+        combined=combined,
+    ):
+        return (
+            "need_review",
+            "공제 후 추정액이 없어 추가 검토가 필요합니다(추정).",
+            "약관·면책·공제 조건을 확인해 주세요.",
+            required_docs,
+        )
+
+    if has_matched_coverage and estimated >= _HIGH_POTENTIAL_ESTIMATED_MIN:
+        return (
+            "high_potential",
+            "공제 후 추정액이 일정 금액 이상이어 우선 검토 후보로 분류했습니다(추정).",
+            "진료비 영수증·담보를 확인해 주세요.",
+            [],
+        )
+
+    if has_matched_coverage and self_pay >= _HIGH_POTENTIAL_SELF_PAY_MIN:
+        return (
+            "high_potential",
+            "본인부담금 규모가 커 우선 검토 후보로 분류했습니다(추정).",
+            "진료비 영수증·세부내역을 준비해 주세요.",
+            [],
+        )
+
     if _is_high_priority_visit(
         visit, self_pay=self_pay, combined=combined, department=department, diagnosis=diagnosis
     ):
@@ -1191,10 +1247,10 @@ def _classify_when_estimated_positive(
                 "초진·외래 영수증과 상해 관련 소견을 확인해 주세요.",
                 [],
             )
-        if self_pay >= 50_000:
+        if self_pay >= _HIGH_POTENTIAL_SELF_PAY_MIN:
             return (
                 "high_potential",
-                "본인부담금 규모가 커 실손 청구 검토 후보로 우선 검토할 수 있습니다(추정).",
+                "본인부담금 규모가 커 우선 검토 후보로 분류했습니다(추정).",
                 "진료비 영수증·세부내역을 준비해 주세요.",
                 [],
             )
@@ -1278,6 +1334,7 @@ def _classify_visit_candidate(
         return _classify_when_estimated_positive(
             visit,
             self_pay=self_pay,
+            estimated=estimated,
             has_matched_coverage=has_matched_coverage,
             hospital=hospital,
             diagnosis=diagnosis,
@@ -1344,7 +1401,73 @@ def _reconcile_category_buckets(
             row["category"] = category
             row["category_label"] = _CATEGORY_LABELS[category]
             reconciled[category].append(row)
-    return reconciled
+    return _ensure_high_potential_fallback(reconciled, categories)
+
+
+def _ensure_high_potential_fallback(
+    categories: dict[str, list[dict[str, Any]]],
+    source_categories: dict[str, Any] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """우선 검토 후보가 0건이면 검토 필요 중 금액 상위 건을 승격(확정 아님)."""
+    if categories.get("high_potential"):
+        return categories
+    src = source_categories if isinstance(source_categories, dict) else categories
+    pool: list[dict[str, Any]] = []
+    for key in ("need_review", "need_documents"):
+        for item in src.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            est = int(item.get("estimated_amount") or 0)
+            ht = str(item.get("hospital_type") or "")
+            combined = " ".join(
+                [
+                    str(item.get("hospital_name") or ""),
+                    str(item.get("department") or ""),
+                    str(item.get("diagnosis") or item.get("diagnosis_name") or ""),
+                ]
+            )
+            if _is_outpatient_pharmacy_zero_estimated(
+                item,
+                estimated_amount=est,
+                hospital_type=ht,
+                combined=combined,
+            ):
+                continue
+            if est >= _HIGH_POTENTIAL_ESTIMATED_MIN or int(item.get("self_pay_amount") or 0) >= _HIGH_POTENTIAL_SELF_PAY_MIN:
+                pool.append(dict(item))
+    pool.sort(
+        key=lambda row: (
+            int(row.get("estimated_amount") or 0),
+            int(row.get("self_pay_amount") or 0),
+        ),
+        reverse=True,
+    )
+    promoted = pool[:10]
+    if not promoted:
+        return categories
+    promoted_keys = {_candidate_fingerprint(row) for row in promoted}
+    high_list = categories.setdefault("high_potential", [])
+    existing_keys = {_candidate_fingerprint(row) for row in high_list if isinstance(row, dict)}
+    for row in promoted:
+        fp = _candidate_fingerprint(row)
+        if fp in existing_keys:
+            continue
+        moved = dict(row)
+        moved["category"] = "high_potential"
+        moved["category_label"] = _CATEGORY_LABELS["high_potential"]
+        moved["reason_short"] = "우선 검토 후보(승격·추정)"
+        high_list.append(moved)
+        existing_keys.add(fp)
+    for key in ("need_review", "need_documents"):
+        remain = []
+        for item in categories.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            if _candidate_fingerprint(item) in promoted_keys:
+                continue
+            remain.append(item)
+        categories[key] = remain
+    return categories
 
 
 def build_classification_debug(

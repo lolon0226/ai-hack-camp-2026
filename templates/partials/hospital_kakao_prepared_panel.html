@@ -1,0 +1,17 @@
+{% if hospital_kakao_pending %}
+<section class="hospital-kakao-prepared" aria-live="polite" aria-label="카카오 인증 안내">
+  <div class="hospital-kakao-prepared__card">
+    <p class="hospital-kakao-prepared__message">
+      카카오로 인증 요청을 보내드렸습니다. 휴대폰에서 인증을 완료해 주세요.
+    </p>
+    <form
+      class="hospital-kakao-prepared__form"
+      method="post"
+      action="{% if hospital_kakao_pending == 'insurance' %}/hospital/insurance-prepared-confirm{% else %}/hospital/hira-prepared-confirm{% endif %}?flow_id={{ flow_id }}"
+      data-loading-message="{% if hospital_kakao_pending == 'insurance' %}보험가입이력을 불러오는 중입니다.{% else %}진료내역을 불러오는 중입니다.{% endif %}"
+    >
+      <button type="submit" class="btn btn--primary hospital-kakao-prepared__btn">인증 완료 후 클릭</button>
+    </form>
+  </div>
+</section>
+{% endif %}

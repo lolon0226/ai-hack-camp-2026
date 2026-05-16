@@ -15,11 +15,16 @@ from typing import Any, Iterable
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
-# 명시 보호 경로(절대·상대). 초기화 대상 목록에 포함되면 예외.
-PROTECTED_INSURANCE_SOURCE_PATHS: tuple[str, ...] = (
+# 준비된 보험가입이력 원부 후보(읽기 전용 로드용). 삭제·덮어쓰기 금지.
+PREPARED_INSURANCE_SOURCE_PATHS: tuple[str, ...] = (
     r"C:\Users\DELL\Desktop\success_insurance_record_export.json",
+    str(BASE_DIR / "success_insurance_record_export.json"),
     str(DATA_DIR / "success_insurance_record_export.json"),
+    str(DATA_DIR / "prepared_insurance_record_export.json"),
 )
+
+# 명시 보호 경로 — PREPARED 와 동일 집합(원부 보호 assert 에서 사용).
+PROTECTED_INSURANCE_SOURCE_PATHS: tuple[str, ...] = PREPARED_INSURANCE_SOURCE_PATHS
 
 # data/ 이하 파일명에 포함되면 보험 원부로 간주해 보호(.json/.db 등)
 PROTECTED_INSURANCE_FILENAME_MARKERS: tuple[str, ...] = (

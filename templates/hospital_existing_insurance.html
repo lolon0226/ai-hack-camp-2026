@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>보험가입이력 보기 · 래드리본 병원용</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-insurance-page hospital-existing-insurance-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      <a class="hospital-start-header__back" href="{{ back_url }}">고객 자료 확인으로</a>
+    </div>
+  </header>
+
+  <main class="hospital-existing-insurance-main">
+    <section class="hospital-existing-insurance-hero">
+      <h1 class="hospital-existing-insurance-hero__title">보험가입이력 보기</h1>
+      <p class="hospital-existing-insurance-hero__lead">
+        {{ customer_name }} · 저장된 고객용 조회 자료 · CODEF 미호출
+      </p>
+    </section>
+
+    {% if company_groups %}
+    <div class="insurance-company-list">
+      {% for group in company_groups %}
+      <article class="insurance-company-card">
+        <header class="insurance-company-card__header">
+          <h2 class="insurance-company-card__name">{{ group.company_name }}</h2>
+          <p class="insurance-company-card__meta">
+            상품 <strong>{{ group.contract_count }}</strong>건 ·
+            정상/유지 <strong>{{ group.active_contract_count }}</strong>건
+          </p>
+        </header>
+        <div class="insurance-product-list">
+          {% for product in group.products %}
+          {% include "partials/insurance_product_card.html" %}
+          {% endfor %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="toggle-panel__empty">표시할 보험가입이력이 없습니다.</p>
+    {% endif %}
+
+    <nav class="hospital-existing-insurance-nav">
+      <a class="btn btn--primary" href="{{ back_url }}">고객 자료 확인으로</a>
+    </nav>
+  </main>
+</body>
+</html>

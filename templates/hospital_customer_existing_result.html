@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>고객 자료 확인 · 래드리본 병원용</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-existing-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      <a class="hospital-start-header__back" href="/hospital/customer-lookup">고객등록검사</a>
+    </div>
+  </header>
+
+  <main class="hospital-existing-main">
+    {% include "partials/step_bar.html" %}
+
+    <section class="hospital-existing-summary" aria-labelledby="existing-title">
+      <h1 id="existing-title" class="hospital-existing-summary__title">고객 자료 확인</h1>
+      <article class="hospital-existing-status-card">
+        <p class="hospital-existing-status-card__name">{{ customer_name }}</p>
+        <p class="hospital-existing-status-card__badge">조회 상태: 고객용 자료 확인됨</p>
+        <ul class="hospital-existing-status-card__list">
+          <li>
+            <span>진료내역</span>
+            <strong class="hospital-existing-status-card__ok">{% if has_medical %}있음{% else %}없음{% endif %}</strong>
+          </li>
+          <li>
+            <span>보험가입이력</span>
+            <strong class="hospital-existing-status-card__ok">{% if has_insurance %}있음{% else %}없음{% endif %}</strong>
+          </li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="hospital-existing-actions" aria-label="자료 보기">
+      <a
+        class="hospital-existing-action-card hospital-existing-action-card--medical"
+        href="/hospital/customer-existing-result/medical?customer_key={{ customer_key | urlencode }}"
+      >
+        <h2 class="hospital-existing-action-card__title">진료내역 보기</h2>
+        <p class="hospital-existing-action-card__desc">기본·세부·처방 내역(저장본)</p>
+        <span class="hospital-existing-action-card__cta">열기</span>
+      </a>
+      <a
+        class="hospital-existing-action-card hospital-existing-action-card--insurance"
+        href="/hospital/customer-existing-result/insurance?customer_key={{ customer_key | urlencode }}"
+      >
+        <h2 class="hospital-existing-action-card__title">보험가입이력 보기</h2>
+        <p class="hospital-existing-action-card__desc">보험회사·상품·증권번호 마스킹·계약상태</p>
+        <span class="hospital-existing-action-card__cta">열기</span>
+      </a>
+    </section>
+
+    <nav class="hospital-existing-nav" aria-label="추가 이동">
+      <a class="btn btn--ghost" href="/hospital/customer">기존 병원용 절차로 다시 조회</a>
+      <a class="btn btn--ghost" href="/operator">운영자 콘솔로 이동</a>
+    </nav>
+  </main>
+
+  <footer class="hospital-start-footer">
+    <p>고객용에서 저장된 자료만 표시합니다. CODEF·보험사 API를 호출하지 않습니다.</p>
+  </footer>
+</body>
+</html>
