@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>병원 출력서류 수신함 · 운영자</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="operator-page">
+  <header class="operator-header">
+    <div class="operator-header__inner">
+      <a class="brand brand--compact" href="/operator" aria-label="운영자 콘솔">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      <a class="operator-header__back" href="/operator">콘솔 홈</a>
+    </div>
+  </header>
+
+  <main class="operator-main">
+    <section class="operator-hero">
+      <h1 class="operator-hero__title">병원 출력서류 수신함</h1>
+      <p class="operator-hero__lead">
+        PDFCreator 프린터 <strong>redribbon</strong> (자동저장 <code>C:\RedRibbonDemo\incoming</code>)에서
+        Demo Print Receiver가 업로드한 PDF입니다.
+      </p>
+      <div class="operator-printer-download">
+        {% include "partials/printer_download_buttons.html" %}
+      </div>
+      {% include "partials/virtual_printer_demo_guide.html" %}
+    </section>
+
+    {% if documents %}
+    <section class="operator-section">
+      <div class="operator-table-wrap">
+        <table class="operator-table">
+          <thead>
+            <tr>
+              <th scope="col">문서</th>
+              <th scope="col">고객 연결</th>
+              <th scope="col">OCR</th>
+              <th scope="col">문서종류 후보</th>
+              <th scope="col">파일</th>
+              <th scope="col">수신 시각</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for doc in documents %}
+            <tr>
+              <td>{{ doc.document_title }}</td>
+              <td>
+                {% if doc.customer_key %}
+                <a href="/operator/actual-loss-claim-package?customer_id={{ doc.customer_key }}">{{ doc.linked_customer_name or '고객' }}</a>
+                {% else %}
+                {{ doc.linked_customer_name or '미연결' }}
+                {% endif %}
+              </td>
+              <td><span class="operator-pill operator-pill--{{ doc.ocr_status }}">{{ doc.ocr_status }}</span></td>
+              <td>{{ doc.document_type_candidate }}</td>
+              <td>
+                {% if doc.file_url %}
+                <a href="{{ doc.file_url }}" target="_blank" rel="noopener">보기</a>
+                {% else %}
+                —
+                {% endif %}
+              </td>
+              <td>{{ doc.created_at }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% else %}
+    <p class="operator-empty">수신 문서가 없습니다. Print Receiver를 실행한 뒤 incoming 폴더에 PDF를 넣거나 프린터로 출력해 주세요.</p>
+    {% endif %}
+  </main>
+</body>
+</html>

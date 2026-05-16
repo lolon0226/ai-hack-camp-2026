@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>운영자 콘솔 · 래드리본</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="operator-page">
+  <header class="operator-header">
+    <div class="operator-header__inner">
+      <a class="brand brand--compact" href="/" aria-label="래드리본 홈">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      <span class="operator-header__badge">운영자 콘솔</span>
+      <a class="operator-header__back" href="/">서비스 선택</a>
+    </div>
+  </header>
+
+  <main class="operator-main">
+    <section class="operator-hero">
+      <h1 class="operator-hero__title">운영자 콘솔</h1>
+      <p class="operator-hero__lead">병원 수신문서·실손 청구 패키지·프린터 연동을 운영합니다. (CODEF·보험사 API 실호출 없음)</p>
+    </section>
+
+    <section class="operator-printer-download-bar" aria-label="프린터 설치">
+      <p class="operator-hero__lead">
+        PDFCreator <strong>redribbon</strong> → <code>C:\RedRibbonDemo\incoming</code> · Demo Print Receiver
+      </p>
+      {% include "partials/printer_download_buttons.html" %}
+      {% include "partials/virtual_printer_demo_guide.html" %}
+    </section>
+
+    <section class="operator-card-grid" aria-label="운영 메뉴">
+      {% for card in operator_cards %}
+      <article class="operator-console-card{% if not card.active %} operator-console-card--disabled{% endif %}">
+        <h2 class="operator-console-card__title">{{ card.title }}</h2>
+        <p class="operator-console-card__desc">{{ card.description }}</p>
+        {% if card.active and card.href %}
+        <a class="btn btn--primary btn--sm" href="{{ card.href }}">열기</a>
+        {% else %}
+        <span class="operator-console-card__soon">준비 중</span>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </section>
+  </main>
+</body>
+</html>

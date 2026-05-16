@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -19,8 +20,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -107,22 +108,48 @@ from services.codef_client import (
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
+PRINT_SETUP_ZIP_URL = "/static/downloads/RedRibbon_Demo_Print_Setup.zip"
+PRINT_SETUP_EXE_URL = "/static/downloads/RedRibbon_Demo_Print_Setup.exe"
+PRINT_UPLOAD_ROOT = BASE_DIR / "data" / "print_receiver_uploads"
+
+
+def _printer_download_template_context() -> dict[str, str]:
+  """병원·운영자 화면 — ZIP/EXE 설치파일 링크."""
+  exe_path = BASE_DIR / "static" / "downloads" / "RedRibbon_Demo_Print_Setup.exe"
+  return {
+      "printer_download_url": PRINT_SETUP_ZIP_URL,
+      "printer_download_zip_url": PRINT_SETUP_ZIP_URL,
+      "printer_download_exe_url": (
+          PRINT_SETUP_EXE_URL if exe_path.is_file() else ""
+      ),
+  }
+
+from services.actual_loss_claim_package_builder import (  # noqa: E402
+    build_actual_loss_claim_package,
+    build_operator_customer_picker,
+)
 from services.persistent_store import (  # noqa: E402
     DB_PATH,
     PersistentStoreConfigError,
     can_make_customer_key,
     ensure_storage,
+    get_received_document_by_id,
     get_storage_health,
     has_medical_records,
     is_search_hash_secret_configured,
     has_stored_credit4u_credentials,
+    list_operator_received_documents,
     load_latest_insurance_records,
     load_latest_medical_records,
+    make_customer_key,
     rebuild_insurance_summary_for_customer,
     normalize_customer_fields,
+    register_print_receiver_upload,
+    save_actual_loss_claim_demo_state,
     save_customer,
     save_insurance_records,
     save_medical_records,
+    seed_operator_received_documents_if_empty,
     upsert_customer_flow,
 )
 
@@ -132,6 +159,7 @@ app = FastAPI(title="RedRibbon MVP")
 @app.on_event("startup")
 def _app_startup() -> None:
     ensure_storage()
+    PRINT_UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -2803,6 +2831,7 @@ def intro(request: Request):
             "customer_url": "/customer/start",
             "hospital_url": "/hospital/start",
             "operator_url": "/operator",
+            **_printer_download_template_context(),
         },
     )
 
@@ -2831,9 +2860,64 @@ def hospital_flow_start(request: Request):
             "current_step": 1,
             "flow_id": None,
             "hospital_flow_first_url": "/hospital/customer",
-            "printer_link_url": None,
             "debug_panel": False,
+            **_printer_download_template_context(),
         },
+    )
+
+
+@app.post("/api/print-receiver/upload")
+async def api_print_receiver_upload(
+    file: UploadFile = File(...),
+    hospital_name: str = Form(""),
+    printer_name: str = Form(""),
+    customer_key: str = Form(""),
+    linked_customer_name: str = Form(""),
+):
+    """Print Receiver PDF 업로드 — operator_received_documents 저장."""
+    filename = str(file.filename or "").strip()
+    if not filename.lower().endswith(".pdf"):
+        return JSONResponse(
+            {"ok": False, "error": "pdf_required"},
+            status_code=400,
+        )
+    content = await file.read()
+    if not content:
+        return JSONResponse(
+            {"ok": False, "error": "empty_file"},
+            status_code=400,
+        )
+    digest = hashlib.sha256(content).hexdigest()
+    day_dir = PRINT_UPLOAD_ROOT / datetime.now(timezone.utc).strftime("%Y%m%d")
+    day_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^\w.\-]+", "_", filename)[:120] or "document.pdf"
+    stored_name = f"{uuid.uuid4().hex}_{safe_name}"
+    stored_path = day_dir / stored_name
+    stored_path.write_bytes(content)
+
+    reg = register_print_receiver_upload(
+        stored_path=str(stored_path.resolve()),
+        original_filename=filename,
+        file_sha256=digest,
+        hospital_name=(hospital_name or "").strip(),
+        printer_name=(printer_name or "").strip(),
+        customer_key=(customer_key or "").strip() or None,
+        linked_customer_name=(linked_customer_name or hospital_name or "").strip(),
+    )
+    doc = reg.get("document") or {}
+    return JSONResponse(
+        {
+            "ok": True,
+            "duplicate": bool(reg.get("duplicate")),
+            "document_id": reg.get("document_id"),
+            "sha256": digest,
+            "file_url": doc.get("file_url"),
+            "message": (
+                "duplicate_skipped"
+                if reg.get("duplicate")
+                else "uploaded"
+            ),
+        }
     )
 
 
@@ -3927,17 +4011,178 @@ def hospital_ai_analysis_start_post(request: Request, flow_id: str | None = None
     return RedirectResponse(f"/hospital/ai-analysis?flow_id={fid}", status_code=303)
 
 
+def _operator_console_cards() -> list[dict[str, Any]]:
+    return [
+        {
+            "title": "병원 출력서류 수신함",
+            "description": "가상프린터·병원 출력으로 수신된 문서를 고객·OCR·문서종류와 함께 확인합니다.",
+            "href": "/operator/received-documents",
+            "active": True,
+        },
+        {
+            "title": "실손보험 청구 패키지",
+            "description": "고객·실손 계약·진료·수신문서를 묶어 보험사 전송 직전 패키지를 검수합니다.",
+            "href": "/operator/actual-loss-claim-package",
+            "active": True,
+        },
+        {
+            "title": "가상프린터 엔진 상태",
+            "description": "RedRibbon 전용 가상프린터·Print Receiver 연결 상태를 확인합니다.",
+            "href": None,
+            "active": False,
+        },
+        {
+            "title": "미분류 문서 관리",
+            "description": "고객 미연결·문서종류 미확정 문서를 분류합니다.",
+            "href": None,
+            "active": False,
+        },
+        {
+            "title": "고객/문서 매칭",
+            "description": "수신 문서와 고객·진료·보험 데이터를 매칭합니다.",
+            "href": None,
+            "active": False,
+        },
+    ]
+
+
+def _find_flow_entry_by_customer_key(customer_key: str) -> dict[str, Any] | None:
+    key = str(customer_key or "").strip()
+    if not key:
+        return None
+    for flow_id, entry in FLOW_STORE.items():
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("customer_key") or "").strip() == key:
+            merged = dict(entry)
+            merged.setdefault("flow_id", flow_id)
+            return merged
+        customer = entry.get("customer")
+        if not isinstance(customer, dict):
+            continue
+        if not is_search_hash_secret_configured():
+            continue
+        try:
+            if make_customer_key(_normalize_stored_customer(customer)) == key:
+                merged = dict(entry)
+                merged.setdefault("flow_id", flow_id)
+                return merged
+        except PersistentStoreConfigError:
+            continue
+    return None
+
+
 @app.get("/operator", response_class=HTMLResponse)
-def operator_stub(request: Request):
-    """운영자 콘솔 스텁."""
+def operator_dashboard(request: Request):
+    """운영자 콘솔 메인."""
     return templates.TemplateResponse(
         request,
-        "flow_stub.html",
+        "operator_dashboard.html",
         {
-            "title": "운영자 콘솔",
-            "lead": "운영자 화면 진입 지점입니다. 통합 앱에서는 기존 운영자 대시보드로 연결하세요.",
-            "back_url": "/",
+            "operator_cards": _operator_console_cards(),
+            **_printer_download_template_context(),
         },
+    )
+
+
+@app.get("/operator/received-documents", response_class=HTMLResponse)
+def operator_received_documents(request: Request):
+    """병원 출력서류 수신함."""
+    seed_operator_received_documents_if_empty()
+    documents = list_operator_received_documents(limit=200)
+    return templates.TemplateResponse(
+        request,
+        "received_documents.html",
+        {
+            "documents": documents,
+            **_printer_download_template_context(),
+        },
+    )
+
+
+@app.get("/operator/received-documents/{document_id}/file")
+def operator_received_document_file(document_id: int):
+    """수신 문서 파일 보기(데모 — 실제 파일 없으면 안내)."""
+    doc = get_received_document_by_id(document_id)
+    if not doc:
+        return PlainTextResponse("문서를 찾을 수 없습니다.", status_code=404)
+    file_path = str(doc.get("file_path") or "").strip()
+    if file_path:
+        path = Path(file_path)
+        if path.is_file():
+            from fastapi.responses import FileResponse
+
+            return FileResponse(path)
+    return PlainTextResponse(
+        f"[데모] 문서 #{document_id} · {doc.get('document_title')} — "
+        "실제 파일 저장 경로가 연결되면 이 링크에서 열립니다.",
+        media_type="text/plain; charset=utf-8",
+    )
+
+
+@app.get("/operator/actual-loss-claim-package", response_class=HTMLResponse)
+def operator_actual_loss_claim_package_get(
+    request: Request,
+    customer_id: str | None = None,
+):
+    """실손보험 청구 패키지 — 고객 선택 또는 검수 화면."""
+    customer_key = str(customer_id or request.query_params.get("customer_id") or "").strip()
+    if not customer_key:
+        return templates.TemplateResponse(
+            request,
+            "actual_loss_claim_package_preview.html",
+            {
+                "show_customer_picker": True,
+                "customers": build_operator_customer_picker(FLOW_STORE),
+                "package_error": None,
+            },
+        )
+    entry = _find_flow_entry_by_customer_key(customer_key)
+    package = build_actual_loss_claim_package(customer_key, entry=entry)
+    if package.get("error"):
+        return templates.TemplateResponse(
+            request,
+            "actual_loss_claim_package_preview.html",
+            {
+                "show_customer_picker": False,
+                "package_error": package.get("message") or "패키지를 구성할 수 없습니다.",
+                "customer_id": customer_key,
+            },
+        )
+    return templates.TemplateResponse(
+        request,
+        "actual_loss_claim_package_preview.html",
+        {
+            "show_customer_picker": False,
+            "package_error": None,
+            "package": package,
+            "customer_id": customer_key,
+        },
+    )
+
+
+@app.post("/operator/actual-loss-claim-package/demo-transmit")
+def operator_actual_loss_claim_package_demo_transmit_post(
+    request: Request,
+    customer_id: str | None = None,
+    note: str = Form(""),
+):
+    """데모 전송 상태만 저장(보험사 API 미호출)."""
+    customer_key = str(customer_id or request.query_params.get("customer_id") or "").strip()
+    if not customer_key:
+        return RedirectResponse("/operator/actual-loss-claim-package", status_code=303)
+    entry = _find_flow_entry_by_customer_key(customer_key)
+    package = build_actual_loss_claim_package(customer_key, entry=entry)
+    payload = package.get("transmission_payload") if isinstance(package, dict) else {}
+    save_actual_loss_claim_demo_state(
+        customer_key,
+        demo_status="demo_transmitted",
+        note=(note or "").strip() or "데모 전송 처리(보험사 API 미호출)",
+        payload=payload if isinstance(payload, dict) else {},
+    )
+    return RedirectResponse(
+        f"/operator/actual-loss-claim-package?customer_id={customer_key}",
+        status_code=303,
     )
 
 

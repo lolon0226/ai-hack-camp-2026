@@ -55,16 +55,14 @@
     </div>
 
     <section class="hospital-printer-aside" aria-labelledby="hospital-printer-title">
-      <h2 id="hospital-printer-title" class="hospital-printer-aside__title">RedRibbon 프린터 연동</h2>
+      <h2 id="hospital-printer-title" class="hospital-printer-aside__title">RedRibbon 전용 가상프린터</h2>
       <p class="hospital-printer-aside__text">
-        병원 EMR에서 출력한 진료비 영수증, 세부내역서, 처방전 등은<br />
-        RedRibbon Printer를 통해 래드리본으로 자동 수신할 수 있습니다.
+        PDFCreator 프린터 <strong>redribbon</strong>의 자동저장 폴더를<br />
+        <code>C:\RedRibbonDemo\incoming</code> 으로 지정합니다.<br />
+        병원 출력 PDF는 Demo Print Receiver가 래드리본 서버로 전달합니다.
       </p>
-      {% if printer_link_url %}
-      <a class="btn btn--ghost btn--sm" href="{{ printer_link_url }}">프린터 설정 보기</a>
-      {% else %}
-      <span class="hospital-printer-aside__disabled">프린터 설정 보기 <span class="hospital-printer-aside__badge">준비 중</span></span>
-      {% endif %}
+      {% include "partials/printer_download_buttons.html" %}
+      {% include "partials/virtual_printer_demo_guide.html" %}
     </section>
   </main>
 

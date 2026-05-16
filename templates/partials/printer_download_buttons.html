@@ -1,0 +1,8 @@
+<div class="printer-download-actions">
+  {% if printer_download_exe_url %}
+  <a class="btn btn--primary btn--sm" href="{{ printer_download_exe_url }}">RedRibbon 전용 출력 수신 엔진 설치파일 (EXE)</a>
+  {% endif %}
+  {% if printer_download_zip_url %}
+  <a class="btn btn--ghost btn--sm" href="{{ printer_download_zip_url }}">설치 패키지 다운로드 (ZIP)</a>
+  {% endif %}
+</div>

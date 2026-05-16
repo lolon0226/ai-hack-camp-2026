@@ -1,0 +1,14 @@
+{
+  "server_url": "http://127.0.0.1:8000",
+  "upload_endpoint": "/api/print-receiver/upload",
+  "watch_dir": "C:\\RedRibbonPrint\\RedRibbon_Printer_Output\\incoming",
+  "uploading_dir": "C:\\RedRibbonPrint\\RedRibbon_Printer_Output\\uploading",
+  "uploaded_dir": "C:\\RedRibbonPrint\\RedRibbon_Printer_Output\\uploaded",
+  "failed_dir": "C:\\RedRibbonPrint\\RedRibbon_Printer_Output\\failed",
+  "logs_dir": "C:\\RedRibbonPrint\\RedRibbon_Printer_Output\\logs",
+  "hospital_name": "TEST_HOSPITAL",
+  "printer_name": "RedRibbon Printer",
+  "poll_interval_sec": 2,
+  "stable_wait_sec": 2,
+  "stable_timeout_sec": 120
+}

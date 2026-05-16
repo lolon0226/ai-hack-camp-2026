@@ -1,0 +1,14 @@
+{
+  "server_url": "http://127.0.0.1:8000",
+  "upload_endpoint": "/api/print-receiver/upload",
+  "watch_dir": "C:\\RedRibbonDemo\\incoming",
+  "uploading_dir": "C:\\RedRibbonDemo\\uploading",
+  "uploaded_dir": "C:\\RedRibbonDemo\\uploaded",
+  "failed_dir": "C:\\RedRibbonDemo\\failed",
+  "log_dir": "C:\\RedRibbonDemo\\logs",
+  "hospital_name": "TEST_HOSPITAL",
+  "printer_name": "redribbon",
+  "poll_interval_seconds": 2,
+  "stable_wait_seconds": 2,
+  "upload_timeout_seconds": 900
+}

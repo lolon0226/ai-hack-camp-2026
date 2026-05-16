@@ -49,7 +49,9 @@
       <div class="hero__cta">
         <a class="btn btn--primary" href="{{ demo_start_url }}">시연 시작하기</a>
         <a class="btn btn--secondary" href="{{ operator_console_url }}">운영자 콘솔 보기</a>
+        {% include "partials/printer_download_buttons.html" %}
       </div>
+      {% include "partials/virtual_printer_demo_guide.html" %}
     </section>
 
     <section class="steps" aria-labelledby="steps-title">

@@ -130,9 +130,35 @@ def ensure_storage() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_insurance_records_customer_created
                 ON insurance_records (customer_key, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS operator_received_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_key TEXT,
+                document_title TEXT NOT NULL,
+                document_type_candidate TEXT,
+                ocr_status TEXT NOT NULL DEFAULT 'pending',
+                file_path TEXT,
+                file_url TEXT,
+                linked_customer_name TEXT,
+                file_sha256 TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_operator_received_documents_customer
+                ON operator_received_documents (customer_key, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS actual_loss_claim_demo_transmissions (
+                customer_key TEXT PRIMARY KEY,
+                demo_status TEXT NOT NULL,
+                note TEXT,
+                payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         _migrate_credit4u_credentials_columns(conn)
+        _migrate_operator_received_documents_columns(conn)
         conn.commit()
     finally:
         conn.close()
@@ -147,6 +173,28 @@ _CREDIT4U_CREDENTIALS_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("updated_at", "TEXT"),
     ("metadata_json", "TEXT"),
 )
+
+
+def _migrate_operator_received_documents_columns(conn: sqlite3.Connection) -> None:
+    table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='operator_received_documents'"
+    ).fetchone()
+    if not table_exists:
+        return
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(operator_received_documents)").fetchall()
+    }
+    if "file_sha256" not in columns:
+        conn.execute(
+            "ALTER TABLE operator_received_documents ADD COLUMN file_sha256 TEXT"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_operator_received_documents_sha
+            ON operator_received_documents (file_sha256)
+            """
+        )
 
 
 def _migrate_credit4u_credentials_columns(conn: sqlite3.Connection) -> None:
@@ -349,13 +397,14 @@ def _row_to_medical_bundle(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
-def load_latest_medical_records(customer: dict[str, Any]) -> dict[str, Any] | None:
-    """customer_key 기준 최신 진료내역 1건(서버 재시작과 무관)."""
-    try:
-        customer_key = make_customer_key(customer)
-    except PersistentStoreConfigError:
+def load_latest_medical_records_by_customer_key(
+    customer_key: str,
+) -> dict[str, Any] | None:
+    """customer_key 기준 medical_records 최신 1건."""
+    key = str(customer_key or "").strip()
+    if not key:
         return None
-
+    _ensure_db_schema()
     conn = sqlite3.connect(DB_PATH)
     try:
         row = conn.execute(
@@ -366,14 +415,24 @@ def load_latest_medical_records(customer: dict[str, Any]) -> dict[str, Any] | No
             ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
-            (customer_key,),
+            (key,),
         ).fetchone()
     finally:
         conn.close()
-
     if not row:
         return None
-    return _row_to_medical_bundle(row)
+    bundle = _row_to_medical_bundle(row)
+    bundle["customer_key"] = key
+    return bundle
+
+
+def load_latest_medical_records(customer: dict[str, Any]) -> dict[str, Any] | None:
+    """customer_key 기준 최신 진료내역 1건(서버 재시작과 무관)."""
+    try:
+        customer_key = make_customer_key(customer)
+    except PersistentStoreConfigError:
+        return None
+    return load_latest_medical_records_by_customer_key(customer_key)
 
 
 def has_medical_records(customer: dict[str, Any]) -> bool:
@@ -749,6 +808,382 @@ def init_storage() -> None:
 def storage_health() -> dict[str, Any]:
     """DEBUG용 DB 상태(ensure_storage 별칭)."""
     return get_storage_health()
+
+
+def get_customer_profile_by_key(customer_key: str) -> dict[str, Any] | None:
+    """운영자 화면용 — customer_key로 이름 등 메타 조회."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return None
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT customer_key, name, email, created_at
+            FROM customers
+            WHERE customer_key = ?
+            LIMIT 1
+            """,
+            (key,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return {
+        "customer_key": str(row[0]),
+        "customer_id": str(row[0]),
+        "name": str(row[1] or "").strip() or "—",
+        "email": str(row[2] or "").strip(),
+        "created_at": str(row[3] or ""),
+    }
+
+
+def list_operator_customers(*, limit: int = 100) -> list[dict[str, Any]]:
+    """운영자 콘솔 고객 선택 목록."""
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    rows: list[tuple[Any, ...]] = []
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                c.customer_key,
+                c.name,
+                c.created_at,
+                (SELECT COUNT(*) FROM medical_records m WHERE m.customer_key = c.customer_key),
+                (SELECT COUNT(*) FROM insurance_records i WHERE i.customer_key = c.customer_key),
+                (
+                    SELECT flow_id FROM customer_flows f
+                    WHERE f.customer_key = c.customer_key
+                    ORDER BY f.updated_at DESC
+                    LIMIT 1
+                )
+            FROM customers c
+            ORDER BY c.created_at DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+    finally:
+        conn.close()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        items.append(
+            {
+                "customer_key": str(row[0]),
+                "customer_id": str(row[0]),
+                "name": str(row[1] or "").strip() or "—",
+                "created_at": str(row[2] or ""),
+                "medical_record_count": int(row[3] or 0),
+                "insurance_record_count": int(row[4] or 0),
+                "latest_flow_id": str(row[5] or "").strip() or None,
+                "has_medical": int(row[3] or 0) > 0,
+                "has_insurance": int(row[4] or 0) > 0,
+            }
+        )
+    return items
+
+
+def list_operator_received_documents(
+    *,
+    customer_key: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """병원 출력서류 수신함 목록."""
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if customer_key:
+            rows = conn.execute(
+                """
+                SELECT id, customer_key, document_title, document_type_candidate,
+                       ocr_status, file_path, file_url, linked_customer_name, created_at
+                FROM operator_received_documents
+                WHERE customer_key = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (str(customer_key).strip(), max(1, min(int(limit), 500))),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, customer_key, document_title, document_type_candidate,
+                       ocr_status, file_path, file_url, linked_customer_name, created_at
+                FROM operator_received_documents
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+    finally:
+        conn.close()
+    return [_received_document_row_to_dict(row) for row in rows]
+
+
+def _received_document_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+    doc_id = int(row[0])
+    file_path = str(row[5] or "").strip()
+    file_url = str(row[6] or "").strip()
+    if not file_url and file_path:
+        file_url = f"/operator/received-documents/{doc_id}/file"
+    return {
+        "id": doc_id,
+        "customer_key": str(row[1] or "").strip() or None,
+        "document_title": str(row[2] or "").strip() or "—",
+        "document_type_candidate": str(row[3] or "").strip() or "—",
+        "ocr_status": str(row[4] or "").strip() or "pending",
+        "file_path": file_path,
+        "file_url": file_url,
+        "linked_customer_name": str(row[7] or "").strip() or "—",
+        "created_at": str(row[8] or ""),
+    }
+
+
+def find_received_document_by_sha256(file_sha256: str) -> dict[str, Any] | None:
+    digest = str(file_sha256 or "").strip().lower()
+    if not digest:
+        return None
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT id, customer_key, document_title, document_type_candidate,
+                   ocr_status, file_path, file_url, linked_customer_name, created_at
+            FROM operator_received_documents
+            WHERE file_sha256 = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (digest,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return _received_document_row_to_dict(row)
+
+
+def register_print_receiver_upload(
+    *,
+    stored_path: str,
+    original_filename: str,
+    file_sha256: str,
+    hospital_name: str = "",
+    printer_name: str = "",
+    customer_key: str | None = None,
+    linked_customer_name: str = "",
+    document_type_candidate: str = "",
+) -> dict[str, Any]:
+    """Print Receiver 업로드 등록(sha256 중복 시 기존 문서 반환)."""
+    digest = str(file_sha256 or "").strip().lower()
+    existing = find_received_document_by_sha256(digest) if digest else None
+    if existing:
+        return {
+            "duplicate": True,
+            "document_id": int(existing["id"]),
+            "document": existing,
+        }
+    title = str(original_filename or "수신문서.pdf").strip() or "수신문서.pdf"
+    if not document_type_candidate:
+        lowered = title.lower()
+        if "영수증" in title:
+            document_type_candidate = "진료비영수증"
+        elif "처방" in title:
+            document_type_candidate = "처방전"
+        elif "세부" in title or "내역" in title:
+            document_type_candidate = "진료비세부내역서"
+        elif "진단" in title:
+            document_type_candidate = "진단서"
+        else:
+            document_type_candidate = "병원출력물"
+    metadata = {
+        "source": "print_receiver",
+        "hospital_name": hospital_name,
+        "printer_name": printer_name,
+        "original_filename": original_filename,
+        "sha256": digest,
+    }
+    doc_id = upsert_operator_received_document(
+        customer_key=customer_key,
+        document_title=title,
+        document_type_candidate=document_type_candidate,
+        ocr_status="pending",
+        file_path=stored_path,
+        file_url="",
+        linked_customer_name=linked_customer_name or hospital_name,
+        file_sha256=digest,
+        metadata_json=metadata,
+    )
+    doc = get_received_document_by_id(doc_id)
+    return {
+        "duplicate": False,
+        "document_id": doc_id,
+        "document": doc or {"id": doc_id},
+    }
+
+
+def upsert_operator_received_document(
+    *,
+    customer_key: str | None,
+    document_title: str,
+    document_type_candidate: str = "",
+    ocr_status: str = "pending",
+    file_path: str = "",
+    file_url: str = "",
+    linked_customer_name: str = "",
+    file_sha256: str = "",
+    metadata_json: dict[str, Any] | str | None = None,
+) -> int:
+    _ensure_db_schema()
+    now = _utc_now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO operator_received_documents (
+                customer_key, document_title, document_type_candidate, ocr_status,
+                file_path, file_url, linked_customer_name, file_sha256, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(customer_key or "").strip() or None,
+                str(document_title or "").strip() or "문서",
+                str(document_type_candidate or "").strip(),
+                str(ocr_status or "pending").strip(),
+                str(file_path or "").strip(),
+                str(file_url or "").strip(),
+                str(linked_customer_name or "").strip(),
+                str(file_sha256 or "").strip().lower() or None,
+                json.dumps(metadata_json or {}, ensure_ascii=False)
+                if isinstance(metadata_json, dict)
+                else str(metadata_json or "{}"),
+                now,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def seed_operator_received_documents_if_empty() -> int:
+    """데모용 수신문서가 없으면 샘플 1건 삽입."""
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM operator_received_documents"
+        ).fetchone()
+        count = int(row[0] or 0) if row else 0
+    finally:
+        conn.close()
+    if count > 0:
+        return 0
+    customers = list_operator_customers(limit=1)
+    ck = customers[0]["customer_key"] if customers else None
+    name = customers[0]["name"] if customers else "—"
+    upsert_operator_received_document(
+        customer_key=ck,
+        document_title="진료비 영수증(샘플)",
+        document_type_candidate="진료비영수증",
+        ocr_status="completed",
+        linked_customer_name=name,
+    )
+    return 1
+
+
+def get_received_document_by_id(document_id: int) -> dict[str, Any] | None:
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT id, customer_key, document_title, document_type_candidate,
+                   ocr_status, file_path, file_url, linked_customer_name, created_at
+            FROM operator_received_documents
+            WHERE id = ?
+            """,
+            (int(document_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return _received_document_row_to_dict(row)
+
+
+def load_actual_loss_claim_demo_state(customer_key: str) -> dict[str, Any] | None:
+    key = str(customer_key or "").strip()
+    if not key:
+        return None
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT customer_key, demo_status, note, payload_json, updated_at
+            FROM actual_loss_claim_demo_transmissions
+            WHERE customer_key = ?
+            """,
+            (key,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        payload = json.loads(str(row[3] or "{}"))
+    except json.JSONDecodeError:
+        payload = {}
+    return {
+        "customer_key": str(row[0]),
+        "demo_status": str(row[1] or ""),
+        "note": str(row[2] or ""),
+        "payload": payload if isinstance(payload, dict) else {},
+        "updated_at": str(row[4] or ""),
+    }
+
+
+def save_actual_loss_claim_demo_state(
+    customer_key: str,
+    *,
+    demo_status: str,
+    note: str = "",
+    payload: dict[str, Any] | None = None,
+) -> None:
+    key = str(customer_key or "").strip()
+    if not key:
+        raise ValueError("customer_key required")
+    _ensure_db_schema()
+    now = _utc_now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            INSERT INTO actual_loss_claim_demo_transmissions (
+                customer_key, demo_status, note, payload_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(customer_key) DO UPDATE SET
+                demo_status = excluded.demo_status,
+                note = excluded.note,
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                key,
+                str(demo_status or "demo_saved").strip(),
+                str(note or "").strip(),
+                json.dumps(payload or {}, ensure_ascii=False),
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_storage_health() -> dict[str, Any]:
