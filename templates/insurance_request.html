@@ -82,9 +82,13 @@
     <p class="hospital-form-error hospital-form-error--info" role="status">{{ insurance_message }}</p>
     {% endif %}
 
+    {% if credit4u_debug and credit4u_debug.codef_daily_limit_exceeded == "예" and insurance_status == "completed" %}
+    <p class="hospital-form-error hospital-form-error--info" role="status">{{ insurance_message }}</p>
+    {% endif %}
+
     {% if show_insurance_contract_retry %}
     <section class="hospital-insurance-retry-summary" aria-label="보험가입이력 재조회">
-      {% with retry_hint="저장된 신용정보원 계정으로 보험가입이력을 다시 조회합니다.", retry_variant="top" %}
+      {% with retry_hint=("준비된 보험가입이력 원부를 다시 불러옵니다." if (prepared_insurance_demo or (credit4u_debug and credit4u_debug.codef_daily_limit_exceeded == "예")) else "저장된 신용정보원 계정으로 보험가입이력을 다시 조회합니다."), retry_variant="top" %}
       {% include "partials/insurance_contract_retry.html" %}
       {% endwith %}
     </section>
@@ -94,9 +98,12 @@
       {% if insurance_status == "pending" and not hide_insurance_codf_start %}
       <p class="hospital-insurance-state__lead">보험가입이력 조회가 필요합니다.</p>
       <p class="hospital-insurance-state__hint">처음 조회하는 고객 또는 회원가입이 필요한 고객은 자동 생성 계정으로 진행합니다.</p>
-      <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}" data-loading-message="신용정보원 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요.">
+      <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}" data-loading-message="보험가입이력을 불러오는 중입니다. 잠시만 기다려 주세요.">
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">보험가입이력 조회 시작</button>
       </form>
+      {% if debug_panel and prepared_insurance_demo %}
+      <p class="hospital-insurance-state__hint">본선 시연에서는 준비된 보험가입이력 원부를 사용해 조회 결과를 구성합니다.</p>
+      {% endif %}
 
       {% elif insurance_status == "pending" and hide_insurance_codf_start %}
       <p class="hospital-insurance-state__lead">저장된 보험가입이력 사용 중</p>
@@ -389,7 +396,7 @@
 
       {% elif insurance_status == "completed" %}
       <div class="hospital-insurance-completed">
-      <p class="hospital-insurance-state__lead">보험가입이력 수신 완료</p>
+      <p class="hospital-insurance-state__lead">{% if insurance_using_prepared_demo %}{{ insurance_message or "보험가입이력 조회 완료" }}{% else %}보험가입이력 수신 완료{% endif %}</p>
       {% if insurance_using_saved_import %}
       <p class="hospital-insurance-state__desc hospital-insurance-state__desc--muted">저장된 보험가입이력 기준입니다.</p>
       {% endif %}
@@ -504,6 +511,38 @@
       <h3 class="hospital-insurance-debug__title">CODEF 디버그</h3>
       <dl class="hospital-insurance-debug__dl">
         <div class="hospital-insurance-debug__row">
+          <dt>codef_effective_client_id_masked</dt>
+          <dd>{{ credit4u_debug.codef_effective_client_id_masked }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_effective_client_id_source</dt>
+          <dd>{{ credit4u_debug.codef_effective_client_id_source }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_use_demo</dt>
+          <dd>{{ credit4u_debug.codef_use_demo }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_base_url</dt>
+          <dd>{{ credit4u_debug.codef_base_url }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_token_cached</dt>
+          <dd>{{ credit4u_debug.codef_token_cached }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_token_client_id_masked</dt>
+          <dd>{{ credit4u_debug.codef_token_client_id_masked }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_api_group</dt>
+          <dd>{{ credit4u_debug.codef_api_group }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_endpoint</dt>
+          <dd>{{ credit4u_debug.codef_endpoint }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
           <dt>credit4u_endpoint</dt>
           <dd>{{ credit4u_debug.credit4u_endpoint }}</dd>
         </div>
@@ -538,6 +577,18 @@
         <div class="hospital-insurance-debug__row">
           <dt>credential_source</dt>
           <dd>{{ credit4u_debug.credential_source }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credit4u_id_final</dt>
+          <dd>{{ credit4u_debug.credit4u_id_final }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credential_loaded_from_store</dt>
+          <dd>{{ credit4u_debug.credential_loaded_from_store }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credential_saved</dt>
+          <dd>{{ credit4u_debug.credential_saved }}</dd>
         </div>
         <div class="hospital-insurance-debug__row">
           <dt>credit4u_current_flow</dt>
@@ -702,6 +753,30 @@
         <div class="hospital-insurance-debug__row">
           <dt>insurance_source</dt>
           <dd>{{ credit4u_debug.insurance_source }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_realtime_call_skipped</dt>
+          <dd>{{ credit4u_debug.codef_realtime_call_skipped }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>prepared_insurance_demo</dt>
+          <dd>{{ credit4u_debug.prepared_insurance_demo }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_daily_limit_exceeded</dt>
+          <dd>{{ credit4u_debug.codef_daily_limit_exceeded }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>realtime_codef_call_skipped</dt>
+          <dd>{{ credit4u_debug.realtime_codef_call_skipped }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>prepared_insurance_loaded</dt>
+          <dd>{{ credit4u_debug.prepared_insurance_loaded }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>insurance_reset_protected_file_count</dt>
+          <dd>{{ credit4u_debug.insurance_reset_protected_file_count }}</dd>
         </div>
         <div class="hospital-insurance-debug__row">
           <dt>loaded_insurance_raw_len</dt>

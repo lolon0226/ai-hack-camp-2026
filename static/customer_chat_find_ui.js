@@ -57,8 +57,12 @@
   function showResultsView() {
     if (api.progressEl) api.progressEl.hidden = true;
     if (api.resultsEl) api.resultsEl.hidden = false;
-    if (api.logEl) api.logEl.hidden = true;
-    if (api.footerEl) api.footerEl.hidden = true;
+    if (api.startAutoClaimPhase) {
+      api.startAutoClaimPhase();
+    } else {
+      if (api.logEl) api.logEl.hidden = true;
+      if (api.footerEl) api.footerEl.hidden = true;
+    }
   }
 
   function pollAdvance(confirmAuth) {
@@ -246,7 +250,9 @@
   }
 
   function startFindFlow() {
-    var payload = api.buildAnswersPayload();
+    var payload = api.buildRegistrationPayload
+      ? api.buildRegistrationPayload()
+      : api.buildAnswersPayload();
     showProgressView("고객정보 저장 중", "saving");
     return fetch("/api/customer/find/start", {
       method: "POST",

@@ -70,9 +70,11 @@ def validate_credit4u_id(user_id: str) -> bool:
 
 
 def validate_credit4u_password(password: str) -> bool:
-    """신용정보원 PW 규칙: 9~20자, 영문·숫자·특수문자 포함."""
+    """신용정보원 PW 규칙: 8~20자, 영문·숫자·특수문자 포함, 공백 금지."""
     value = password or ""
-    if not (9 <= len(value) <= 20):
+    if not value or re.search(r"\s", value):
+        return False
+    if not (8 <= len(value) <= 20):
         return False
     if not re.search(r"[A-Za-z]", value):
         return False
@@ -81,6 +83,16 @@ def validate_credit4u_password(password: str) -> bool:
     if not re.search(r"[^A-Za-z0-9]", value):
         return False
     return True
+
+
+def credit4u_password_validation_message(password: str) -> str:
+    """검증 실패 시 사용자 안내 문구(비밀번호 원문 미포함)."""
+    if validate_credit4u_password(password):
+        return ""
+    return (
+        "비밀번호는 8~20자이며 영문·숫자·특수문자를 모두 포함해야 합니다. "
+        "공백은 사용할 수 없습니다."
+    )
 
 
 def _build_credit4u_id(digest: str, prefix: str) -> str:

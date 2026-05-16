@@ -97,6 +97,38 @@ def encrypt_codef_password(plain_password: str) -> str:
         ) from exc
 
 
+CODEF_CALL_DEBUG_KEYS = (
+    "codef_base_url",
+    "codef_use_demo",
+    "codef_effective_client_id_masked",
+    "codef_effective_client_id_source",
+    "codef_endpoint",
+    "codef_api_group",
+    "codef_token_cached",
+    "codef_token_client_id_masked",
+)
+
+_token_cache: dict[str, str] = {}
+
+
+def codef_base_url() -> str:
+    return (os.getenv("CODEF_BASE_URL") or DEFAULT_CODEF_BASE_URL).rstrip("/")
+
+
+def mask_codef_client_id(client_id: str) -> str:
+    """client_id 마스킹 — 앞 8자 + ... + 뒤 4자."""
+    value = (client_id or "").strip()
+    if not value:
+        return "—"
+    if len(value) <= 12:
+        return value[:4] + "..." if len(value) > 4 else "****"
+    return f"{value[:8]}...{value[-4:]}"
+
+
+def codef_effective_client_id_source() -> str:
+    return "CODEF_DEMO_CLIENT_ID" if _env_truthy("CODEF_USE_DEMO") else "CODEF_CLIENT_ID"
+
+
 def _codef_credentials() -> tuple[str, str]:
     if _env_truthy("CODEF_USE_DEMO"):
         client_id = (os.getenv("CODEF_DEMO_CLIENT_ID") or "").strip()
@@ -107,6 +139,50 @@ def _codef_credentials() -> tuple[str, str]:
     if not client_id or not client_secret:
         raise CodefClientError("CODEF 클라이언트 자격 증명이 설정되지 않았습니다.")
     return client_id, client_secret
+
+
+def _invalidate_codef_token_cache() -> None:
+    _token_cache.clear()
+
+
+def _codef_token_cache_valid(client_id: str, base_url: str) -> bool:
+    return bool(
+        _token_cache.get("token")
+        and _token_cache.get("client_id") == client_id
+        and _token_cache.get("base_url") == base_url
+    )
+
+
+def build_codef_call_debug(api_group: str, endpoint: str) -> dict[str, Any]:
+    """CODEF API 호출 직전 DEBUG 메타(시크릿·토큰 원문 없음)."""
+    client_id, _ = _codef_credentials()
+    base_url = codef_base_url()
+    cached = _codef_token_cache_valid(client_id, base_url)
+    cached_client_id = str(_token_cache.get("client_id") or "") if cached else ""
+    return {
+        "codef_base_url": base_url,
+        "codef_use_demo": _env_truthy("CODEF_USE_DEMO"),
+        "codef_effective_client_id_masked": mask_codef_client_id(client_id),
+        "codef_effective_client_id_source": codef_effective_client_id_source(),
+        "codef_endpoint": (endpoint or "").strip() or "—",
+        "codef_api_group": (api_group or "").strip() or "—",
+        "codef_token_cached": cached,
+        "codef_token_client_id_masked": (
+            mask_codef_client_id(cached_client_id) if cached_client_id else None
+        ),
+    }
+
+
+def pick_codef_call_debug(*sources: dict[str, Any] | None) -> dict[str, Any]:
+    """여러 debug dict에서 CODEF credential 필드를 병합."""
+    merged: dict[str, Any] = {}
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in CODEF_CALL_DEBUG_KEYS:
+            if key in src and src[key] is not None:
+                merged[key] = src[key]
+    return merged
 
 
 def parse_codef_response(response: requests.Response) -> Any:
@@ -130,9 +206,7 @@ def parse_codef_response(response: requests.Response) -> Any:
     raise CodefClientError("CODEF 응답을 JSON으로 파싱할 수 없습니다.")
 
 
-def get_codef_access_token() -> str:
-    """CODEF OAuth access_token 발급."""
-    client_id, client_secret = _codef_credentials()
+def _fetch_codef_access_token(client_id: str, client_secret: str) -> str:
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
     try:
         response = requests.post(
@@ -161,6 +235,20 @@ def get_codef_access_token() -> str:
     if not token or not isinstance(token, str):
         raise CodefClientError("CODEF access_token을 받지 못했습니다.")
     return token
+
+
+def get_codef_access_token() -> str:
+    """CODEF OAuth access_token 발급(캐시, client_id·base_url 변경 시 무효화)."""
+    client_id, client_secret = _codef_credentials()
+    base_url = codef_base_url()
+    if not _codef_token_cache_valid(client_id, base_url):
+        _invalidate_codef_token_cache()
+        token = _fetch_codef_access_token(client_id, client_secret)
+        _token_cache["token"] = token
+        _token_cache["client_id"] = client_id
+        _token_cache["base_url"] = base_url
+        return token
+    return str(_token_cache["token"])
 
 
 def _digits_only(value: str, *, max_len: int | None = None) -> str:
@@ -370,12 +458,15 @@ def user_message_for_second_failure(result_code: str, result_message: str) -> st
     return user_message_for_codef_failure(code, msg)
 
 
-def _hira_medical_url() -> str:
-    base_url = (os.getenv("CODEF_BASE_URL") or DEFAULT_CODEF_BASE_URL).rstrip("/")
+def _hira_medical_path() -> str:
     path = (os.getenv("CODEF_HIRA_MEDICAL_PATH") or DEFAULT_HIRA_MEDICAL_PATH).strip()
     if not path.startswith("/"):
         path = "/" + path
-    return f"{base_url}{path}"
+    return path
+
+
+def _hira_medical_url() -> str:
+    return f"{codef_base_url()}{_hira_medical_path()}"
 
 
 def _as_record_list(value: Any) -> list[Any]:
@@ -432,6 +523,7 @@ def is_hira_second_success(result_code: str, result: dict[str, Any], data: dict[
 def _post_hira_medical_api(payload: dict[str, Any]) -> dict[str, Any]:
     """심평원 진료정보열람 POST 공통 처리."""
     url = _hira_medical_url()
+    codef_call_debug = build_codef_call_debug("hira", _hira_medical_path())
     token = get_codef_access_token()
     try:
         response = requests.post(
@@ -464,6 +556,7 @@ def _post_hira_medical_api(payload: dict[str, Any]) -> dict[str, Any]:
         "status_code": response.status_code,
         "result_code": result_code,
         "result_message": result_message,
+        "codef_call_debug": codef_call_debug,
     }
 
 

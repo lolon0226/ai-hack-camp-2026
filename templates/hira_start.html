@@ -66,6 +66,21 @@
     </section>
 
     <section class="hospital-hira-state" aria-live="polite">
+      {% if hira_rate_limited or medical_status == "rate_limited" %}
+      <div class="hospital-hira-saved-choice hospital-hira-saved-choice--top" role="region" aria-labelledby="hira-rate-limit-title">
+        <h2 id="hira-rate-limit-title" class="hospital-hira-saved-choice__title">CODEF 일일 한도 초과</h2>
+        <p class="hospital-hira-saved-choice__desc">{{ medical_message or "CODEF 일 100건 요청 한도가 초과되었습니다. 준비된 진료내역 저장본을 사용합니다." }}</p>
+        <div class="hospital-hira-saved-choice__actions">
+          <form class="hospital-hira-saved-choice__form" method="post" action="/hospital/hira-use-saved?flow_id={{ flow_id }}">
+            <button type="submit" class="btn btn--primary hospital-hira-saved-choice__btn">저장된 진료내역 사용</button>
+          </form>
+        </div>
+        {% if not has_prepared_medical_backup %}
+        <p class="hospital-hira-state__hint hospital-hira-state__hint--warn">준비된 진료내역 백업 DB를 찾을 수 없습니다. data/redribbon_final_before_*.db 를 확인해 주세요.</p>
+        {% endif %}
+      </div>
+      {% endif %}
+
       {% if medical_status == "pending" and has_saved_medical_records %}
       <div class="hospital-hira-saved-choice" role="region" aria-labelledby="hira-saved-choice-title">
         <h2 id="hira-saved-choice-title" class="hospital-hira-saved-choice__title">이 고객의 저장된 진료내역이 있습니다.</h2>
@@ -137,6 +152,18 @@
 
       {% else %}
       <p class="hospital-hira-state__lead">알 수 없는 처리 상태입니다.</p>
+      {% endif %}
+
+      {% if debug_panel and codef_limit_debug %}
+      <aside class="hospital-hira-debug hospital-hira-debug--limit" aria-label="CODEF 한도 디버그">
+        <h3 class="hospital-hira-debug__title">CODEF 한도 · 준비본</h3>
+        <dl class="hospital-hira-debug__dl">
+          <div class="hospital-hira-debug__row"><dt>codef_daily_limit_exceeded</dt><dd>{{ codef_limit_debug.codef_daily_limit_exceeded }}</dd></div>
+          <div class="hospital-hira-debug__row"><dt>realtime_codef_call_skipped</dt><dd>{{ codef_limit_debug.realtime_codef_call_skipped }}</dd></div>
+          <div class="hospital-hira-debug__row"><dt>prepared_medical_loaded</dt><dd>{{ codef_limit_debug.prepared_medical_loaded }}</dd></div>
+          <div class="hospital-hira-debug__row"><dt>hira_stage</dt><dd>{{ hira_stage or "—" }}</dd></div>
+        </dl>
+      </aside>
       {% endif %}
 
       {% if debug_panel and hira_storage_debug %}

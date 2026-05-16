@@ -18,6 +18,7 @@ from services.codef_client import (
     _as_record_list,
     _extract_result_data,
     _truthy_flag,
+    build_codef_call_debug,
     codef_password_encryption_debug,
     encrypt_codef_password,
     extract_two_way_info,
@@ -25,6 +26,12 @@ from services.codef_client import (
     is_codef_public_key_configured,
     parse_codef_response,
 )
+
+
+def _merge_codef_call_debug(debug: dict[str, Any], codef_call_debug: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(debug)
+    merged.update(codef_call_debug)
+    return merged
 
 CODEF_SUCCESS_CODE = "CF-00000"
 
@@ -1119,6 +1126,8 @@ def post_credit4u_contract_info_first(
     """
     del flow_id  # noqa: ARG001
     payload: dict[str, Any] = {}
+    endpoint = credit4u_contract_info_path()
+    codef_call_debug = build_codef_call_debug("credit4u_contract_info", endpoint)
     try:
         payload = build_credit4u_contract_info_payload(customer, credentials)
         url = credit4u_contract_info_url()
@@ -1143,7 +1152,9 @@ def post_credit4u_contract_info_first(
             "result_code": exc.code or "CLIENT_ERROR",
             "result_message": exc.message,
             "extracted": {},
-            "payload_debug": credit4u_payload_debug(payload),
+            "payload_debug": _merge_codef_call_debug(
+                credit4u_payload_debug(payload), codef_call_debug
+            ),
         }
     except requests.RequestException:
         return {
@@ -1155,7 +1166,9 @@ def post_credit4u_contract_info_first(
             "result_code": "CLIENT_ERROR",
             "result_message": "CODEF API 서버에 연결할 수 없습니다.",
             "extracted": {},
-            "payload_debug": credit4u_payload_debug(payload),
+            "payload_debug": _merge_codef_call_debug(
+                credit4u_payload_debug(payload), codef_call_debug
+            ),
         }
 
     try:
@@ -1170,7 +1183,9 @@ def post_credit4u_contract_info_first(
             "result_code": "PARSE_ERROR",
             "result_message": "CODEF 응답을 해석하지 못했습니다.",
             "extracted": {},
-            "payload_debug": credit4u_payload_debug(payload),
+            "payload_debug": _merge_codef_call_debug(
+                credit4u_payload_debug(payload), codef_call_debug
+            ),
         }
 
     result, data = _extract_result_data(parsed)
@@ -1178,7 +1193,9 @@ def post_credit4u_contract_info_first(
     result_message = str(result.get("message") or "")
     extracted = extract_two_way_info(parsed)
     status_code = int(response.status_code or 0)
-    payload_debug = credit4u_payload_debug(payload)
+    payload_debug = _merge_codef_call_debug(
+        credit4u_payload_debug(payload), codef_call_debug
+    )
 
     if status_code >= 400:
         return {
@@ -1219,6 +1236,8 @@ def post_credit4u_contract_info_second(
     반환: ok, parsed, result, data, status_code, result_code, result_message
     """
     payload: dict[str, Any] = {}
+    endpoint = credit4u_contract_info_path()
+    codef_call_debug = build_codef_call_debug("credit4u_contract_info", endpoint)
     try:
         payload = build_credit4u_contract_info_second_payload(
             customer,
@@ -1247,7 +1266,9 @@ def post_credit4u_contract_info_second(
             "status_code": 0,
             "result_code": exc.code or "CLIENT_ERROR",
             "result_message": exc.message,
-            "payload_debug": credit4u_payload_debug(payload),
+            "payload_debug": _merge_codef_call_debug(
+                credit4u_payload_debug(payload), codef_call_debug
+            ),
         }
     except requests.RequestException:
         return {
@@ -1258,7 +1279,9 @@ def post_credit4u_contract_info_second(
             "status_code": 0,
             "result_code": "CLIENT_ERROR",
             "result_message": "CODEF API 서버에 연결할 수 없습니다.",
-            "payload_debug": credit4u_payload_debug(payload),
+            "payload_debug": _merge_codef_call_debug(
+                credit4u_payload_debug(payload), codef_call_debug
+            ),
         }
 
     try:
@@ -1272,14 +1295,18 @@ def post_credit4u_contract_info_second(
             "status_code": response.status_code,
             "result_code": "PARSE_ERROR",
             "result_message": "CODEF 응답을 해석하지 못했습니다.",
-            "payload_debug": credit4u_payload_debug(payload),
+            "payload_debug": _merge_codef_call_debug(
+                credit4u_payload_debug(payload), codef_call_debug
+            ),
         }
 
     result, data = _extract_result_data(parsed)
     result_code = str(result.get("code") or "")
     result_message = str(result.get("message") or "")
     status_code = int(response.status_code or 0)
-    payload_debug = credit4u_payload_debug(payload)
+    payload_debug = _merge_codef_call_debug(
+        credit4u_payload_debug(payload), codef_call_debug
+    )
 
     if status_code >= 400:
         return {
@@ -1317,6 +1344,8 @@ def post_credit4u_register_first(
           result_code, result_message, register_debug
     """
     payload: dict[str, Any] = {}
+    endpoint = credit4u_register_path()
+    codef_call_debug = build_codef_call_debug("credit4u_register", endpoint)
     try:
         payload = build_credit4u_register_first_payload(
             customer, credentials, check_param_uuid
@@ -1344,8 +1373,9 @@ def post_credit4u_register_first(
             "status_code": 0,
             "result_code": exc.code or "CLIENT_ERROR",
             "result_message": exc.message,
-            "register_debug": credit4u_register_payload_debug(
-                payload, purpose="register_first"
+            "register_debug": _merge_codef_call_debug(
+                credit4u_register_payload_debug(payload, purpose="register_first"),
+                codef_call_debug,
             ),
             "first_payload": payload,
         }
@@ -1360,8 +1390,9 @@ def post_credit4u_register_first(
             "status_code": 0,
             "result_code": "CLIENT_ERROR",
             "result_message": "CODEF API 서버에 연결할 수 없습니다.",
-            "register_debug": credit4u_register_payload_debug(
-                payload, purpose="register_first"
+            "register_debug": _merge_codef_call_debug(
+                credit4u_register_payload_debug(payload, purpose="register_first"),
+                codef_call_debug,
             ),
             "first_payload": payload,
         }
@@ -1379,8 +1410,9 @@ def post_credit4u_register_first(
             "status_code": response.status_code,
             "result_code": "PARSE_ERROR",
             "result_message": "CODEF 응답을 해석하지 못했습니다.",
-            "register_debug": register_response_debug(
-                payload, {}, {}, purpose="register_first"
+            "register_debug": _merge_codef_call_debug(
+                register_response_debug(payload, {}, {}, purpose="register_first"),
+                codef_call_debug,
             ),
             "first_payload": payload,
         }
@@ -1391,8 +1423,9 @@ def post_credit4u_register_first(
     extracted = extract_two_way_info(parsed)
     extra_info = extract_register_extra_info(data)
     status_code = int(response.status_code or 0)
-    reg_debug = register_response_debug(
-        payload, extra_info, extracted, purpose="register_first"
+    reg_debug = _merge_codef_call_debug(
+        register_response_debug(payload, extra_info, extracted, purpose="register_first"),
+        codef_call_debug,
     )
 
     if status_code >= 400:
@@ -1448,6 +1481,8 @@ def post_credit4u_register_second(
     elapsed: float | None = None
     t0 = 0.0
     response = None
+    endpoint = credit4u_register_path()
+    codef_call_debug = build_codef_call_debug("credit4u_register", endpoint)
 
     try:
         payload = build_credit4u_register_second_payload(
@@ -1504,7 +1539,10 @@ def post_credit4u_register_second(
             "status_code": 0,
             "result_code": exc.code or "CLIENT_ERROR",
             "result_message": exc.message,
-            "register_debug": credit4u_register_payload_debug(payload, purpose=purpose),
+            "register_debug": _merge_codef_call_debug(
+                credit4u_register_payload_debug(payload, purpose=purpose),
+                codef_call_debug,
+            ),
             "completed": False,
         }
     except requests.Timeout:
@@ -1531,7 +1569,10 @@ def post_credit4u_register_second(
             "status_code": 0,
             "result_code": "CLIENT_ERROR",
             "result_message": "CODEF API 서버에 연결할 수 없습니다.",
-            "register_debug": credit4u_register_payload_debug(payload, purpose=purpose),
+            "register_debug": _merge_codef_call_debug(
+                credit4u_register_payload_debug(payload, purpose=purpose),
+                codef_call_debug,
+            ),
             "completed": False,
         }
     except requests.RequestException:
@@ -1558,7 +1599,10 @@ def post_credit4u_register_second(
             "status_code": 0,
             "result_code": "CLIENT_ERROR",
             "result_message": "CODEF API 서버에 연결할 수 없습니다.",
-            "register_debug": credit4u_register_payload_debug(payload, purpose=purpose),
+            "register_debug": _merge_codef_call_debug(
+                credit4u_register_payload_debug(payload, purpose=purpose),
+                codef_call_debug,
+            ),
             "completed": False,
         }
 
@@ -1587,8 +1631,9 @@ def post_credit4u_register_second(
             "status_code": response.status_code,
             "result_code": "PARSE_ERROR",
             "result_message": "CODEF 응답을 해석하지 못했습니다.",
-            "register_debug": register_response_debug(
-                payload, {}, {}, purpose=purpose
+            "register_debug": _merge_codef_call_debug(
+                register_response_debug(payload, {}, {}, purpose=purpose),
+                codef_call_debug,
             ),
             "completed": False,
         }
@@ -1599,8 +1644,9 @@ def post_credit4u_register_second(
     extracted = extract_two_way_info(parsed)
     extra_info = extract_register_extra_info(data)
     status_code = int(response.status_code or 0)
-    reg_debug = register_response_debug(
-        payload, extra_info, extracted, purpose=purpose
+    reg_debug = _merge_codef_call_debug(
+        register_response_debug(payload, extra_info, extracted, purpose=purpose),
+        codef_call_debug,
     )
     completed = is_credit4u_register_completed(result_code, data)
     timeout_source = (

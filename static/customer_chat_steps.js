@@ -1,6 +1,7 @@
 /**
  * 고객용 채팅형 접수 step 정의
- * type: consent | text | tel | email | choice | yesno | summary
+ * 1차: RedRibbonCustomerChatSteps (고객등록)
+ * 2차: RedRibbonCustomerChatAutoClaimSteps (지난 보험금 찾기 이후 자동청구)
  */
 window.RedRibbonCustomerChatSteps = [
   {
@@ -111,6 +112,15 @@ window.RedRibbonCustomerChatSteps = [
     },
   },
   {
+    key: "summary",
+    type: "summary",
+    prompt: "입력하신 정보를 최종 확인해 주세요.",
+  },
+];
+
+/** 2차 자동청구 신청 (지난 보험금 찾기 결과 이후) */
+window.RedRibbonCustomerChatAutoClaimSteps = [
+  {
     key: "bank",
     type: "text",
     prompt: "보험금 수령 은행명을 선택하거나 직접 입력해 주세요.",
@@ -158,23 +168,19 @@ window.RedRibbonCustomerChatSteps = [
   {
     key: "account_holder_insured",
     type: "yesno",
-    prompt: "보험금 받을 계좌의 예금주가 피보험자 본인인가요?",
+    prompt: "보험금 받을 계좌가 피보험자 본인 명의인가요?",
     field: "accountHolderIsInsured",
     yesLabel: "예, 본인입니다",
     noLabel: "아니오",
     noFollowUp:
       "보험금 청구 접수는 가능하지만, 보험회사 심사 과정에서 본인 명의 계좌로 정정이 필요할 수 있습니다.",
   },
-  {
-    key: "summary",
-    type: "summary",
-    prompt: "입력하신 정보를 최종 확인해 주세요.",
-  },
 ];
 
 window.RedRibbonCustomerChatKeywords = [
   "래드리본",
   "지난 보험금 찾기",
+  "자동청구",
   "진료내역",
   "보험가입이력",
   "개인정보 동의",

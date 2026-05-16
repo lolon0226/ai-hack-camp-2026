@@ -1716,6 +1716,15 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   color: #777;
 }
 
+.hospital-credit4u-credentials__form {
+  margin-top: 0.25rem;
+}
+
+.hospital-credit4u-credentials__submit {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
 .hospital-credit4u-credentials__hint--rules {
   margin-top: 0.75rem;
   color: #666;

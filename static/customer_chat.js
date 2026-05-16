@@ -1,8 +1,9 @@
 (function () {
   "use strict";
 
-  var STORAGE_KEY = "redribbon_customer_chat_v4";
+  var STORAGE_KEY = "redribbon_customer_chat_v5";
   var steps = window.RedRibbonCustomerChatSteps || [];
+  var autoClaimSteps = window.RedRibbonCustomerChatAutoClaimSteps || [];
   var mask = window.RedRibbonCustomerChatMask || {};
   var keywords = window.RedRibbonCustomerChatKeywords || [];
 
@@ -41,6 +42,7 @@
   var viewSheetBody = document.getElementById("customer-view-sheet-body");
   var viewSheetClose = document.getElementById("customer-view-sheet-close");
   var viewSheetBackdrop = document.getElementById("customer-view-sheet-backdrop");
+  var exitBtn = document.getElementById("customer-chat-exit");
 
   if (!logEl || !steps.length) {
     return;
@@ -74,6 +76,13 @@
       finished: false,
       declined: false,
       findStarted: false,
+      flowId: null,
+      findResults: null,
+      findStatus: null,
+      autoClaimPromptDone: false,
+      autoClaimDeclined: false,
+      autoClaimCompleted: false,
+      autoClaimStepIndex: 0,
     };
   }
 
@@ -82,13 +91,12 @@
     return { identity: id, rrnFront: id.slice(0, 6), rrnBack: id.slice(6, 13) };
   }
 
-  /** 다음 단계 API(진료내역·보험가입이력) 연결용 입력값 정리 */
-  function buildAnswersPayload() {
+  /** 1차 고객등록 payload (은행·계좌 제외) */
+  function buildRegistrationPayload() {
     var a = state.answers;
     var idParts = splitIdentity(a.identity);
     var hasIdentity = idParts.identity.length === 13;
-    var correctionNotice = a.accountHolderIsInsured === false;
-    var payload = {
+    return {
       consent: !!a.consent,
       name: a.name || "",
       phone: a.phone || "",
@@ -98,17 +106,55 @@
       rrnFront: idParts.rrnFront,
       rrnBack: idParts.rrnBack,
       email: a.email || "",
+      readyForMedicalHistory: !!(a.consent && hasIdentity && a.phone),
+      readyForInsuranceHistory: !!(a.consent && hasIdentity),
+    };
+  }
+
+  /** 2차 자동청구 신청 payload */
+  function buildAutoClaimPayload() {
+    var a = state.answers;
+    var correctionNotice = a.accountHolderIsInsured === false;
+    return {
+      autoClaimConsent: state.autoClaimCompleted
+        ? true
+        : state.autoClaimDeclined
+          ? false
+          : null,
       bankName: a.bankName || "",
       accountNumber: a.accountNumber || "",
       accountHolderIsInsured: a.accountHolderIsInsured !== false,
       accountHolderCorrectionNoticeRequired: correctionNotice,
-      readyForMedicalHistory: !!(a.consent && hasIdentity && a.phone),
-      readyForInsuranceHistory: !!(a.consent && hasIdentity),
-      phase: state.findStarted ? "find_running" : "intake",
     };
+  }
+
+  /** API·저장용 통합 payload */
+  function buildAnswersPayload() {
+    var reg = buildRegistrationPayload();
+    var auto = buildAutoClaimPayload();
+    var phase = "intake";
+    if (state.autoClaimCompleted) {
+      phase = "auto_claim_done";
+    } else if (state.autoClaimDeclined) {
+      phase = "auto_claim_declined";
+    } else if (state.autoClaimStepIndex > 0 || state.answers.autoClaimConsent === true) {
+      phase = "auto_claim";
+    } else if (state.findStarted) {
+      phase = state.findResults ? "find_results" : "find_running";
+    }
+    var payload = Object.assign({}, reg, auto, { phase: phase });
     state.payload = payload;
     state.answers._payload = payload;
     return payload;
+  }
+
+  function hasChatProgress() {
+    return (
+      state.messages.length > 0 ||
+      !!state.answers.name ||
+      !!state.findStarted ||
+      state.autoClaimStepIndex > 0
+    );
   }
 
   function formatHighlightedText(text) {
@@ -352,6 +398,7 @@
     state = defaultState();
     saveState();
     logEl.innerHTML = "";
+    logEl.classList.remove("customer-chat-log--after-results");
     hideConsentPanel();
     hideConsentDock();
     hideSummaryCta();
@@ -363,6 +410,209 @@
     if (logEl) logEl.hidden = false;
     if (footerEl) footerEl.hidden = false;
     runCurrentStep();
+  }
+
+  function showResultsFollowUpShell() {
+    if (progressEl) progressEl.hidden = true;
+    if (resultsEl) resultsEl.hidden = false;
+    if (logEl) {
+      logEl.hidden = false;
+      logEl.classList.add("customer-chat-log--after-results");
+    }
+    var shell = logEl && logEl.parentElement;
+    if (shell && resultsEl && logEl && resultsEl !== logEl.previousElementSibling) {
+      shell.insertBefore(resultsEl, logEl);
+    }
+    if (footerEl) footerEl.hidden = false;
+    hideSummaryCta();
+    hideConsentPanel();
+    hideConsentDock();
+    scrollToBottom();
+  }
+
+  function saveAutoClaimToServer() {
+    if (!window.fetch || !state.flowId) {
+      return Promise.resolve();
+    }
+    buildAnswersPayload();
+    return fetch("/api/customer/auto-claim/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        flow_id: state.flowId,
+        payload: buildAutoClaimPayload(),
+      }),
+    }).catch(function () {
+      /* 데모: 저장 실패해도 UI는 완료 */
+    });
+  }
+
+  function currentAutoClaimStep() {
+    return autoClaimSteps[state.autoClaimStepIndex] || null;
+  }
+
+  function advanceAutoClaimStep() {
+    state.autoClaimStepIndex += 1;
+    saveState();
+    runAutoClaimStep();
+  }
+
+  function submitAutoClaimAnswer(rawValue, displayText) {
+    var step = currentAutoClaimStep();
+    if (
+      !step ||
+      (step.type !== "text" && step.type !== "tel" && step.type !== "email")
+    ) {
+      return;
+    }
+    var value = step.formatAnswer
+      ? step.formatAnswer(rawValue, state.answers)
+      : String(rawValue || "").trim();
+    var err = step.validate ? step.validate(value, state.answers) : "";
+    if (err) {
+      appendMessage("bot", err);
+      return;
+    }
+    state.answers[step.field] = value;
+    buildAnswersPayload();
+    var shown = "입력 완료";
+    if (step.displayAnswer) {
+      shown = step.displayAnswer(value, state.answers) || shown;
+    } else if (!step.sensitive) {
+      shown = displayText || value;
+    }
+    appendMessage("user", shown, { sensitive: !!step.sensitive });
+    clearQuickReplies();
+    hideForm();
+    advanceAutoClaimStep();
+  }
+
+  function runAutoClaimInputStep(step) {
+    hideConsentPanel();
+    appendMessage("bot", step.prompt, { highlight: true });
+    if (step.quickReplies && step.quickReplies.length) {
+      showQuickReplies(step.quickReplies, function (value, label) {
+        if (step.quickRepliesFillOnly) {
+          inputEl.value = value;
+          showForm(step);
+          inputEl.focus();
+          saveState();
+          return;
+        }
+        submitAutoClaimAnswer(value, label || value);
+      });
+    }
+    showForm(step);
+    saveState();
+  }
+
+  function runAutoClaimYesNoStep(step) {
+    hideForm();
+    appendMessage("bot", step.prompt, { highlight: true });
+    showQuickReplies(
+      [
+        { label: step.yesLabel || "예", value: "yes", primary: true },
+        { label: step.noLabel || "아니오", value: "no" },
+      ],
+      function (value, label) {
+        var isYes = value === "yes";
+        state.answers[step.field] = isYes;
+        if (!isYes) {
+          state.answers.accountHolderCorrectionNoticeRequired = true;
+        } else {
+          state.answers.accountHolderCorrectionNoticeRequired = false;
+        }
+        buildAnswersPayload();
+        appendMessage("user", label || value);
+        if (!isYes && step.noFollowUp) {
+          appendMessage("bot", step.noFollowUp, { highlight: true });
+        }
+        clearQuickReplies();
+        state.autoClaimStepIndex += 1;
+        state.autoClaimCompleted = true;
+        saveState();
+        saveAutoClaimToServer().finally(function () {
+          appendMessage(
+            "bot",
+            "자동청구 신청 정보가 저장되었습니다. (데모: 보험사 전송은 하지 않습니다.)",
+            { highlight: true }
+          );
+        });
+      }
+    );
+    saveState();
+  }
+
+  function runAutoClaimStep() {
+    var step = currentAutoClaimStep();
+    if (!step) {
+      hideForm();
+      clearQuickReplies();
+      return;
+    }
+    if (step.type === "text" || step.type === "tel" || step.type === "email") {
+      runAutoClaimInputStep(step);
+      return;
+    }
+    if (step.type === "yesno") {
+      runAutoClaimYesNoStep(step);
+      return;
+    }
+    advanceAutoClaimStep();
+  }
+
+  function startAutoClaimPhase() {
+    if (state.autoClaimPromptDone) {
+      showResultsFollowUpShell();
+      return;
+    }
+    state.autoClaimPromptDone = true;
+    showResultsFollowUpShell();
+    runBotMessages(
+      [
+        "병원을 갔을 때 따로 보험금 청구를 할 필요 없이, 실손보험을 비롯한 보험금 자동청구를 이용하시겠습니까?",
+      ],
+      function () {
+        showQuickReplies(
+          [
+            {
+              label: "예, 자동청구를 이용하겠습니다",
+              value: "yes",
+              primary: true,
+            },
+            { label: "아니오, 나중에 하겠습니다", value: "no" },
+          ],
+          function (value, label) {
+            appendMessage("user", label || value);
+            clearQuickReplies();
+            if (value === "no") {
+              state.autoClaimDeclined = true;
+              state.answers.autoClaimConsent = false;
+              buildAnswersPayload();
+              saveState();
+              saveAutoClaimToServer();
+              appendMessage(
+                "bot",
+                "알겠습니다. 지난 보험금 찾기 결과만 확인하실 수 있습니다.",
+                { highlight: true }
+              );
+              hideForm();
+              return;
+            }
+            state.answers.autoClaimConsent = true;
+            state.autoClaimStepIndex = 0;
+            buildAnswersPayload();
+            saveState();
+            appendMessage(
+              "bot",
+              "자동청구를 위해 수령 계좌 정보를 입력해 주세요.",
+              { highlight: true }
+            );
+            runAutoClaimStep();
+          }
+        );
+      }
+    );
   }
 
   function runBotMessages(messages, onDone) {
@@ -498,17 +748,6 @@
       "<li><span>이메일</span><strong>" +
       escapeHtml(a.email || "—") +
       "</strong></li>" +
-      "<li><span>은행명</span><strong>" +
-      escapeHtml(a.bankName || "—") +
-      "</strong></li>" +
-      "<li><span>계좌번호</span><strong>" +
-      escapeHtml(mask.account(a.accountNumber)) +
-      "</strong></li>" +
-      "<li><span>예금주 본인 여부</span><strong>" +
-      escapeHtml(
-        a.accountHolderIsInsured === false ? "본인 아님" : "본인"
-      ) +
-      "</strong></li>" +
       "<li><span>동의</span><strong>" +
       consentLabel +
       "</strong></li>" +
@@ -528,23 +767,20 @@
     if (!window.fetch) {
       return Promise.resolve();
     }
-    var payload = buildAnswersPayload();
+    var payload = buildRegistrationPayload();
     return fetch("/api/customer/chat/draft", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         draft_id: state.draftId || null,
         consent: !!state.answers.consent,
-        phase: payload.phase,
+        phase: "intake",
         answers: {
           name: state.answers.name,
           phone_masked: mask.phone(state.answers.phone),
           telecom: state.answers.telecom,
           rrn_masked: mask.identity(state.answers.identity),
           email: state.answers.email,
-          bankName: state.answers.bankName,
-          account_masked: mask.account(state.answers.accountNumber),
-          accountHolder: state.answers.accountHolder,
           readyForMedicalHistory: payload.readyForMedicalHistory,
           readyForInsuranceHistory: payload.readyForInsuranceHistory,
         },
@@ -562,13 +798,6 @@
       .catch(function () {
         /* 데모: 서버 저장 실패해도 UI는 완료 */
       });
-  }
-
-  function summaryQuickReplies() {
-    return [
-      { label: "지난 보험금 찾기 시작", value: "submit", primary: true },
-      { label: "다시 입력", value: "reset" },
-    ];
   }
 
   function handleSummarySubmit() {
@@ -636,14 +865,15 @@
     }
     appendMessage("bot", step.prompt, { highlight: true });
     if (step.quickReplies && step.quickReplies.length) {
-      showQuickReplies(step.quickReplies, function (value) {
+      showQuickReplies(step.quickReplies, function (value, label) {
         if (step.quickRepliesFillOnly) {
           inputEl.value = value;
           showForm(step);
           inputEl.focus();
+          saveState();
           return;
         }
-        submitAnswer(value, value);
+        submitAnswer(value, label || value);
       });
     }
     showForm(step);
@@ -726,6 +956,21 @@
 
   formEl.addEventListener("submit", function (event) {
     event.preventDefault();
+    if (
+      state.autoClaimPromptDone &&
+      !state.autoClaimDeclined &&
+      !state.autoClaimCompleted &&
+      currentAutoClaimStep()
+    ) {
+      var acStep = currentAutoClaimStep();
+      if (
+        acStep &&
+        (acStep.type === "text" || acStep.type === "tel" || acStep.type === "email")
+      ) {
+        submitAutoClaimAnswer(inputEl.value, inputEl.value);
+      }
+      return;
+    }
     var step = currentStep();
     if (
       !step ||
@@ -759,6 +1004,15 @@
       if (state.findResults) {
         if (window.RedRibbonCustomerFindUi) {
           window.RedRibbonCustomerFindUi.showResultsView();
+        }
+        if (state.autoClaimPromptDone) {
+          showResultsFollowUpShell();
+          if (state.autoClaimDeclined || state.autoClaimCompleted) {
+            hideForm();
+            clearQuickReplies();
+          } else if (state.autoClaimStepIndex > 0) {
+            runAutoClaimStep();
+          }
         }
       } else if (window.RedRibbonCustomerFindUi) {
         window.RedRibbonCustomerFindUi.showProgressView(
@@ -815,17 +1069,30 @@
     }
     if (step.type === "text" || step.type === "tel" || step.type === "email") {
       if (step.quickReplies) {
-        showQuickReplies(step.quickReplies, function (value) {
+        showQuickReplies(step.quickReplies, function (value, label) {
           if (step.quickRepliesFillOnly) {
             inputEl.value = value;
             showForm(step);
             return;
           }
-          submitAnswer(value, value);
+          submitAnswer(value, label || value);
         });
       }
       showForm(step);
     }
+  }
+
+  if (exitBtn) {
+    exitBtn.addEventListener("click", function (event) {
+      event.preventDefault();
+      if (hasChatProgress()) {
+        var ok = window.confirm(
+          "입력 중인 내용이 사라질 수 있습니다. 나가시겠습니까?"
+        );
+        if (!ok) return;
+      }
+      window.location.href = "/";
+    });
   }
 
   if (consentDockView) {
@@ -848,6 +1115,11 @@
 
   window.RedRibbonCustomerChatApi = {
     state: state,
+    buildRegistrationPayload: buildRegistrationPayload,
+    buildAutoClaimPayload: buildAutoClaimPayload,
+    buildAnswersPayload: buildAnswersPayload,
+    startAutoClaimPhase: startAutoClaimPhase,
+    showResultsFollowUpShell: showResultsFollowUpShell,
     logEl: logEl,
     footerEl: footerEl,
     progressEl: progressEl,

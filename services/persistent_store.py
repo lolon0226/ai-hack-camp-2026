@@ -11,20 +11,73 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "redribbon_final.db"
+load_dotenv(BASE_DIR / ".env", override=True)
+
+
+def resolve_storage_db_path() -> Path:
+    """REDRIBBON_STORAGE_DB_PATH(상대 경로는 프로젝트 루트 기준) → SQLite 파일."""
+    raw = (
+        os.getenv("REDRIBBON_STORAGE_DB_PATH")
+        or os.getenv("REDDRIBBON_STORAGE_DB_PATH")  # .env 오타 별칭
+        or ""
+    ).strip()
+    if raw:
+        path = Path(raw)
+        if not path.is_absolute():
+            path = (BASE_DIR / path).resolve()
+        else:
+            path = path.resolve()
+        return path
+    return (DATA_DIR / "redribbon_final.db").resolve()
+
+
+DB_PATH = resolve_storage_db_path()
 
 MEDICAL_SOURCE_CODEF_HIRA = "codef_hira"
+MEDICAL_SOURCE_PREPARED_RECORD = "prepared_medical_record"
 INSURANCE_SOURCE_CODEF_CREDIT4U = "codef_credit4u"
+INSURANCE_SOURCE_PREPARED_DEMO = "credit4u_prepared_demo_record"
 CREDENTIAL_SOURCE_GENERATED = "generated"
+CREDENTIAL_SOURCE_PREPARED_DEMO_GENERATED = "prepared_demo_generated"
+CREDENTIAL_SOURCE_USER_EDITED_GENERATED = "user_edited_generated"
+
+from services.insurance_source_protection import (
+    InsuranceSourceProtectionError,
+    PROTECTED_INSURANCE_SOURCE_PATHS,
+    all_protected_insurance_file_paths,
+    assert_reset_paths_safe,
+    assert_safe_insurance_file_delete,
+    assert_safe_insurance_file_write,
+    is_preserved_insurance_record_source,
+    is_protected_database_file_path,
+    is_protected_insurance_file_path,
+    reset_scope_summary,
+    sql_preserved_insurance_source_clause,
+)
+
+# resolve_prepared_insurance_record_export_path() 후보 — PROTECTED_INSURANCE_SOURCE_PATHS 와 동기화
+PREPARED_INSURANCE_RECORD_EXPORT_CANDIDATES = PROTECTED_INSURANCE_SOURCE_PATHS
+
+
+def resolve_prepared_insurance_record_export_path() -> Path | None:
+    """본선 시연용 준비된 보험가입이력 JSON 경로."""
+    env_path = (os.getenv("PREPARED_INSURANCE_RECORD_JSON") or "").strip()
+    candidates = ([env_path] if env_path else []) + list(PREPARED_INSURANCE_SOURCE_PATHS)
+    for raw in candidates:
+        path = Path(raw)
+        if path.is_file():
+            return path
+    return None
 
 
 class PersistentStoreConfigError(RuntimeError):
@@ -696,6 +749,144 @@ def has_medical_records(customer: dict[str, Any]) -> bool:
     return load_latest_medical_records(customer) is not None
 
 
+def resolve_prepared_medical_backup_db_path() -> Path | None:
+    """준비된 진료내역 템플릿이 들어 있는 백업 SQLite(읽기 전용)."""
+    env_path = (os.getenv("PREPARED_MEDICAL_BACKUP_DB") or "").strip()
+    candidates: list[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.extend(
+        sorted(
+            list(DATA_DIR.glob("redribbon_final_before_*reset*.db"))
+            + list(DATA_DIR.glob("redribbon_final_before_credit4u_reset_*.db"))
+            + list(DATA_DIR.glob("redribbon_final_before_medical_insurance_reset_*.db")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    )
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved.is_file() and resolved != DB_PATH.resolve():
+            return resolved
+    return None
+
+
+def _load_medical_template_rows_from_db(db_path: Path) -> list[sqlite3.Row]:
+    """백업 DB에서 복사할 medical_records 행(최신 1세트)."""
+    conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        preferred = conn.execute(
+            """
+            SELECT id, flow_id, basic_json, detail_json, prescribe_json, counts_json, source, created_at
+            FROM medical_records
+            WHERE source = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (MEDICAL_SOURCE_PREPARED_RECORD,),
+        ).fetchone()
+        if preferred is not None:
+            return [preferred]
+        return list(
+            conn.execute(
+                """
+                SELECT id, flow_id, basic_json, detail_json, prescribe_json, counts_json, source, created_at
+                FROM medical_records
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+
+
+def restore_prepared_medical_records_for_customer(
+    customer: dict[str, Any],
+    flow_id: str,
+) -> dict[str, Any]:
+    """
+    준비된 진료내역을 현재 customer_key에만 복사·저장.
+    백업 DB·원부 파일은 읽기만 하며 변경하지 않음.
+    """
+    customer_key = make_customer_key(customer)
+    save_customer(customer)
+    backup_db = resolve_prepared_medical_backup_db_path()
+    if backup_db is None:
+        raise FileNotFoundError(
+            "준비된 진료내역 백업 DB를 찾을 수 없습니다. data/redribbon_final_before_*.db 를 확인해 주세요."
+        )
+    template_rows = _load_medical_template_rows_from_db(backup_db)
+    if not template_rows:
+        raise ValueError("준비된 진료내역 템플릿이 백업 DB에 없습니다.")
+
+    row = template_rows[0]
+    basic = json.loads(row["basic_json"] or "[]")
+    detail = json.loads(row["detail_json"] or "[]")
+    prescribe = json.loads(row["prescribe_json"] or "[]")
+    counts = json.loads(row["counts_json"] or "{}")
+    if not isinstance(counts, dict):
+        counts = {
+            "basic": len(basic) if isinstance(basic, list) else 0,
+            "detail": len(detail) if isinstance(detail, list) else 0,
+            "prescribe": len(prescribe) if isinstance(prescribe, list) else 0,
+        }
+
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            "DELETE FROM medical_records WHERE customer_key = ?",
+            (customer_key,),
+        )
+        now = _utc_now_iso()
+        conn.execute(
+            """
+            INSERT INTO medical_records (
+                customer_key, flow_id, basic_json, detail_json, prescribe_json,
+                counts_json, source, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_key,
+                flow_id,
+                json.dumps(basic, ensure_ascii=False),
+                json.dumps(detail, ensure_ascii=False),
+                json.dumps(prescribe, ensure_ascii=False),
+                json.dumps(counts, ensure_ascii=False),
+                MEDICAL_SOURCE_PREPARED_RECORD,
+                now,
+            ),
+        )
+        conn.commit()
+        upsert_customer_flow(flow_id, customer_key, current_step=3)
+    finally:
+        conn.close()
+
+    logger.info(
+        "prepared medical_records restored flow_id=%s customer_key=%s backup=%s",
+        flow_id,
+        customer_key[:8] + "…" if len(customer_key) > 8 else customer_key,
+        backup_db.name,
+    )
+    return {
+        "flow_id": flow_id,
+        "basic": basic,
+        "detail": detail,
+        "prescribe": prescribe,
+        "counts": counts,
+        "source": MEDICAL_SOURCE_PREPARED_RECORD,
+        "created_at": now,
+        "customer_key": customer_key,
+    }
+
+
+def has_prepared_medical_backup() -> bool:
+    """준비된 진료내역 백업 DB 존재 여부."""
+    return resolve_prepared_medical_backup_db_path() is not None
+
+
 def _credit4u_encryption_key() -> bytes:
     """비밀번호 암호화 키(REDRIBBON_CREDIT4U_SECRET 기반)."""
     secret = (os.getenv("REDRIBBON_CREDIT4U_SECRET") or "").strip()
@@ -1055,7 +1246,11 @@ def rebuild_insurance_summary_for_customer(customer: dict[str, Any]) -> dict[str
 
 
 def init_storage() -> None:
-    """스키마 생성·마이그레이션(ensure_storage 별칭)."""
+    """스키마 생성·마이그레이션(ensure_storage 별칭).
+
+    보험가입이력 원부 JSON/백업 DB 파일은 삭제·덮어쓰지 않습니다.
+    insurance_records 보존 source 행도 이 함수에서 삭제하지 않습니다.
+    """
     ensure_storage()
 
 
@@ -1676,4 +1871,100 @@ def get_storage_health() -> dict[str, Any]:
         "credit4u_credentials_columns": credit4u_credentials_columns,
         "credential_version_column_present": "credential_version"
         in credit4u_credentials_columns,
+        "insurance_reset_protection": reset_scope_summary(),
     }
+
+
+def delete_credit4u_credentials_resettable(*, customer_key: str | None = None) -> int:
+    """초기화 허용: credit4u_credentials 삭제(고객 지정 시 해당 고객만)."""
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if customer_key:
+            cur = conn.execute(
+                "DELETE FROM credit4u_credentials WHERE customer_key = ?",
+                (str(customer_key).strip(),),
+            )
+        else:
+            cur = conn.execute("DELETE FROM credit4u_credentials")
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def delete_insurance_records_resettable(*, customer_key: str | None = None) -> int:
+    """초기화 허용: 보존 source 가 아닌 insurance_records 행만 삭제."""
+    _ensure_db_schema()
+    preserve_clause, preserve_params = sql_preserved_insurance_source_clause()
+    sql = f"DELETE FROM insurance_records WHERE {preserve_clause}"
+    params: list[Any] = list(preserve_params)
+    key = str(customer_key or "").strip()
+    if key:
+        sql += " AND customer_key = ?"
+        params.append(key)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(sql, params)
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
+def count_preserved_insurance_records(*, customer_key: str | None = None) -> int:
+    """보존 source insurance_records 행 수(초기화 후 잔존 확인용)."""
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            "SELECT id, source, customer_key FROM insurance_records"
+        ).fetchall()
+    finally:
+        conn.close()
+    count = 0
+    key = str(customer_key or "").strip()
+    for row in rows:
+        if not is_preserved_insurance_record_source(str(row[1] or "")):
+            continue
+        if key and str(row[2] or "").strip() != key:
+            continue
+        count += 1
+    return count
+
+
+def reset_credit4u_operational_data_safe(
+    *,
+    customer_key: str | None = None,
+    paths_to_delete: Iterable[str | Path] | None = None,
+) -> dict[str, Any]:
+    """
+    운영 데이터만 안전 초기화.
+
+    - credit4u_credentials: 삭제 허용
+    - insurance_records: 보존 source 제외 행만 삭제
+    - 준비된 보험가입이력 원부 파일·백업 DB: 삭제 금지(경로 포함 시 예외)
+  """
+    if paths_to_delete:
+        assert_reset_paths_safe(paths_to_delete, operation="reset_credit4u_operational_data_safe")
+
+    cred_deleted = delete_credit4u_credentials_resettable(customer_key=customer_key)
+    ins_deleted = delete_insurance_records_resettable(customer_key=customer_key)
+    preserved_rows = count_preserved_insurance_records(customer_key=customer_key)
+    return {
+        "customer_key": customer_key or "—",
+        "credit4u_credentials_deleted": cred_deleted,
+        "insurance_records_deleted": ins_deleted,
+        "preserved_insurance_records_remaining": preserved_rows,
+        "protected_files": [str(p) for p in all_protected_insurance_file_paths()],
+    }
+
+
+def assert_database_file_reset_safe(db_path: str | Path) -> None:
+    """DB 파일 자체 삭제·교체 시 백업·시드 DB 보호."""
+    resolved = Path(db_path).expanduser().resolve()
+    if is_protected_database_file_path(resolved):
+        raise InsuranceSourceProtectionError(
+            f"보호된 DB 백업/시드 파일은 초기화 대상에 포함할 수 없습니다: {resolved}"
+        )
+    assert_reset_paths_safe([resolved], operation="database_reset")
