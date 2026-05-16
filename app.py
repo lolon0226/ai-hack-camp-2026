@@ -7,16 +7,31 @@
 """
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from services.codef_client import (
+    CodefClientError,
+    build_hira_medical_payload,
+    extract_hira_medical_lists,
+    extract_two_way_info,
+    is_hira_auth_waiting,
+    post_hira_medical_first,
+    post_hira_medical_second,
+    user_message_for_codef_failure,
+    user_message_for_second_failure,
+)
+
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
 app = FastAPI(title="RedRibbon MVP")
 
@@ -25,6 +40,22 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # 병원 흐름: 메모리 저장(재시작 시 초기화). POST 고객등록 시 항상 신규 flow_id만 발급.
 FLOW_STORE: dict[str, dict[str, Any]] = {}
+
+
+def _env_truthy(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in ("1", "true", "yes")
+
+
+DEMO_MODE = _env_truthy("DEMO_MODE")
+DEBUG_PANEL_ENABLED = _env_truthy("DEBUG_PANEL_ENABLED")
+
+
+def _demo_complete_allowed() -> bool:
+    return DEMO_MODE or DEBUG_PANEL_ENABLED
+
+
+def _debug_panel() -> bool:
+    return DEBUG_PANEL_ENABLED
 
 
 def _canonical_flow_id(raw: str | None) -> str | None:
@@ -90,8 +121,256 @@ def _mask_phone(phone: str) -> str:
 
 
 def _request_hira_auth_demo(flow_id: str) -> None:
-    """향후 CODEF 연동 시 이 함수에 외부 호출을 연결합니다. 데모 단계에서는 호출하지 않습니다."""
+    """DEMO_MODE: CODEF 호출 없이 인증 대기 상태만 시뮬레이션."""
     del flow_id  # noqa: ARG001
+
+
+def _apply_hira_waiting_auth(
+    entry: dict[str, Any],
+    *,
+    result: dict[str, Any],
+    extracted: dict[str, Any],
+) -> None:
+    entry["medical_status"] = "waiting_auth"
+    entry["medical_auth_requested"] = True
+    entry["codef_result_code"] = str(result.get("code") or "")
+    entry["codef_result_message"] = str(result.get("message") or "")
+    entry["codef_continue2_way"] = bool(extracted.get("continue2Way"))
+    entry["codef_method"] = str(extracted.get("method") or "")
+    entry["two_way_info_found"] = bool(extracted.get("twoWayInfo_found"))
+    if extracted.get("twoWayInfo_found") and extracted.get("twoWayInfo") is not None:
+        entry["two_way_info"] = extracted["twoWayInfo"]
+    entry["codef_root_keys"] = list(extracted.get("root_keys") or [])
+    entry["codef_data_keys"] = list(extracted.get("data_keys") or [])
+    entry["medical_message"] = "카카오 인증 요청이 발송되었습니다."
+    entry["second_status"] = entry.get("second_status") or "idle"
+
+
+def _apply_hira_waiting_auth_debug_needed(
+    entry: dict[str, Any],
+    *,
+    result: dict[str, Any],
+    extracted: dict[str, Any],
+) -> None:
+    """CF-03002이나 twoWayInfo 저장 실패 — DEBUG로 구조 확인."""
+    entry["medical_status"] = "waiting_auth_debug_needed"
+    entry["medical_auth_requested"] = True
+    entry["codef_result_code"] = str(result.get("code") or "")
+    entry["codef_result_message"] = str(result.get("message") or "")
+    entry["codef_continue2_way"] = bool(extracted.get("continue2Way"))
+    entry["codef_method"] = str(extracted.get("method") or "")
+    entry["two_way_info_found"] = False
+    entry.pop("two_way_info", None)
+    entry["codef_root_keys"] = list(extracted.get("root_keys") or [])
+    entry["codef_data_keys"] = list(extracted.get("data_keys") or [])
+    entry["medical_message"] = (
+        "카카오 인증 요청은 성공했으나, 2차 인증 정보 저장에 실패했습니다."
+    )
+    entry["second_status"] = entry.get("second_status") or "idle"
+
+
+def _apply_hira_auth_failed(
+    entry: dict[str, Any],
+    *,
+    result_code: str,
+    result_message: str,
+    user_message: str,
+) -> None:
+    entry["medical_status"] = "failed"
+    entry["codef_result_code"] = result_code
+    entry["codef_result_message"] = result_message
+    entry["medical_message"] = user_message
+    entry["second_status"] = "failed"
+
+
+def _apply_hira_second_completed(
+    entry: dict[str, Any],
+    *,
+    lists: dict[str, Any],
+    result_code: str,
+    result_message: str,
+) -> None:
+    counts = lists.get("counts") or {"basic": 0, "detail": 0, "prescribe": 0}
+    entry["medical_status"] = "completed"
+    entry["medical_result_counts"] = counts
+    entry["medical_records_basic"] = lists.get("basic") or []
+    entry["medical_records_detail"] = lists.get("detail") or []
+    entry["medical_records_prescribe"] = lists.get("prescribe") or []
+    entry["medical_message"] = "진료내역 수신이 완료되었습니다."
+    entry["second_status"] = "completed"
+    entry["codef_second_result_code"] = result_code
+    entry["codef_second_result_message"] = result_message
+
+
+def _apply_hira_second_failed(
+    entry: dict[str, Any],
+    *,
+    result_code: str,
+    result_message: str,
+    user_message: str,
+) -> None:
+    entry["medical_status"] = "failed"
+    entry["second_status"] = "failed"
+    entry["medical_message"] = user_message
+    entry["codef_second_result_code"] = result_code
+    entry["codef_second_result_message"] = result_message
+
+
+def _complete_hira_demo(entry: dict[str, Any]) -> None:
+    entry["medical_status"] = "completed"
+    entry["medical_result_counts"] = {"basic": 113, "detail": 703, "prescribe": 382}
+    entry["medical_records"] = list(_MEDICAL_SAMPLE_RECORDS)
+    entry["medical_message"] = "진료내역 수신이 완료되었습니다."
+    entry["second_status"] = "completed"
+    entry["codef_second_result_code"] = "DEMO"
+    entry["codef_second_result_message"] = "데모 모드 샘플 완료"
+
+
+def _get_hira_first_payload(flow_id: str, entry: dict[str, Any]) -> dict[str, Any]:
+    stored = entry.get("hira_first_payload")
+    if isinstance(stored, dict) and stored:
+        return dict(stored)
+    customer = entry.get("customer") or {}
+    payload = build_hira_medical_payload(customer, flow_id)
+    entry["hira_first_payload"] = payload
+    return payload
+
+
+def _clear_hira_codef_fields(entry: dict[str, Any]) -> None:
+    for key in (
+        "medical_message",
+        "medical_auth_requested",
+        "codef_result_code",
+        "codef_result_message",
+        "codef_continue2_way",
+        "codef_method",
+        "two_way_info",
+        "two_way_info_found",
+        "codef_root_keys",
+        "codef_data_keys",
+        "hira_first_payload",
+        "medical_result_counts",
+        "medical_records",
+        "medical_records_basic",
+        "medical_records_detail",
+        "medical_records_prescribe",
+        "codef_second_result_code",
+        "codef_second_result_message",
+        "second_status",
+    ):
+        entry.pop(key, None)
+    entry["second_status"] = "idle"
+
+
+def _hira_modal_context(entry: dict[str, Any]) -> tuple[bool, str]:
+    """진료내역 카카오 인증 모달 단계: intro | kakao_sent | kakao_error | fetching | done | error."""
+    status = entry.get("medical_status") or "pending"
+    second = entry.get("second_status") or "idle"
+    if second == "in_progress" and status in ("waiting_auth", "waiting_auth_debug_needed"):
+        return True, "fetching"
+    if status == "completed":
+        return True, "done"
+    if status == "failed":
+        return True, "error"
+    if status == "waiting_auth":
+        return True, "kakao_sent"
+    if status == "waiting_auth_debug_needed":
+        return True, "kakao_error"
+    return False, "intro"
+
+
+def _hira_codef_debug_context(entry: dict[str, Any]) -> dict[str, Any] | None:
+    if not _debug_panel():
+        return None
+    counts = entry.get("medical_result_counts") or {}
+    root_keys = entry.get("codef_root_keys") or []
+    data_keys = entry.get("codef_data_keys") or []
+    flow_keys = sorted(str(k) for k in entry.keys())
+    return {
+        "codef_result_code": entry.get("codef_result_code") or "—",
+        "codef_result_message": entry.get("codef_result_message") or "—",
+        "codef_second_result_code": entry.get("codef_second_result_code") or "—",
+        "codef_second_result_message": entry.get("codef_second_result_message") or "—",
+        "continue2_way": entry.get("codef_continue2_way"),
+        "method": entry.get("codef_method") or "—",
+        "two_way_info_saved": bool(entry.get("two_way_info")),
+        "two_way_info_found": entry.get("two_way_info_found"),
+        "second_status": entry.get("second_status") or "idle",
+        "medical_result_counts": counts,
+        "data_keys": ", ".join(data_keys) if data_keys else "—",
+        "flow_keys": ", ".join(flow_keys) if flow_keys else "—",
+        "flow_has_two_way_info": bool(entry.get("two_way_info")),
+    }
+
+
+def _request_hira_auth_codef(flow_id: str, entry: dict[str, Any]) -> None:
+    """실제 CODEF 심평원 1차 인증 요청."""
+    customer = entry.get("customer") or {}
+    payload = build_hira_medical_payload(customer, flow_id)
+    entry["hira_first_payload"] = dict(payload)
+    entry["second_status"] = entry.get("second_status") or "idle"
+    api_result = post_hira_medical_first(payload)
+    parsed = api_result.get("parsed")
+    result = api_result.get("result") or {}
+    extracted = extract_two_way_info(parsed)
+
+    if is_hira_auth_waiting(parsed, result, api_result.get("data") or {}):
+        result_code = str(result.get("code") or "")
+        if result_code == "CF-03002" and extracted["twoWayInfo_found"]:
+            _apply_hira_waiting_auth(entry, result=result, extracted=extracted)
+        elif result_code == "CF-03002" and not extracted["twoWayInfo_found"]:
+            _apply_hira_waiting_auth_debug_needed(entry, result=result, extracted=extracted)
+        else:
+            _apply_hira_waiting_auth(entry, result=result, extracted=extracted)
+        return
+
+    result_code = str(result.get("code") or "")
+    result_message = str(result.get("message") or "")
+    _apply_hira_auth_failed(
+        entry,
+        result_code=result_code,
+        result_message=result_message,
+        user_message=user_message_for_codef_failure(result_code, result_message),
+    )
+
+
+def _normalize_medical_record_row(raw: Any) -> dict[str, str]:
+    """CODEF/데모 진료내역 1건을 화면 표시용으로 정규화(민감 원문 필드명만 사용)."""
+    if not isinstance(raw, dict):
+        return {
+            "visit_date": "-",
+            "hospital_name": "-",
+            "department": "-",
+            "diagnosis": "-",
+            "copay_amount": "-",
+        }
+
+    def _pick(*keys: str) -> str:
+        for key in keys:
+            value = raw.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return "-"
+
+    return {
+        "visit_date": _pick("resTreatDate", "date", "treatment_date", "visit_date"),
+        "hospital_name": _pick("resHospitalName", "hospital_name"),
+        "department": _pick("resDepartment", "department"),
+        "diagnosis": _pick("resDiseaseName", "disease_name", "diagnosis"),
+        "copay_amount": _pick("resPaidAmount", "patient_paid_amount", "copay_amount"),
+    }
+
+
+def _medical_records_preview(entry: dict[str, Any], *, limit: int = 10) -> list[dict[str, str]]:
+    """basic 리스트(또는 데모 medical_records)에서 최대 limit건 미리보기."""
+    raw_list = entry.get("medical_records_basic")
+    if not isinstance(raw_list, list) or not raw_list:
+        fallback = entry.get("medical_records")
+        raw_list = fallback if isinstance(fallback, list) else []
+    preview: list[dict[str, str]] = []
+    for raw in raw_list[:limit]:
+        preview.append(_normalize_medical_record_row(raw))
+    return preview
 
 
 def _build_customer_display(customer: dict[str, Any]) -> dict[str, str]:
@@ -156,6 +435,149 @@ _MEDICAL_SAMPLE_RECORDS: list[dict[str, str]] = [
         "copay_amount": "11,300원",
     },
 ]
+
+
+_INSURANCE_SAMPLE_RECORDS: list[dict[str, Any]] = [
+    {
+        "company": "NH농협손해보험",
+        "product_name": "무배당NH프리미어운전자보험1804",
+        "policy_no": "DEMO-001",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "운전자",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "NH농협손해보험",
+        "product_name": "무배당헤아림실손의료비보험2001",
+        "policy_no": "DEMO-002",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "실손",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "NH농협손해보험",
+        "product_name": "시연용 종신보험(계약자 전용)",
+        "policy_no": "DEMO-003",
+        "status": "유지",
+        "role": "계약자",
+        "category": "기타",
+        "include_for_claim_review": False,
+    },
+    {
+        "company": "삼성화재",
+        "product_name": "시연용 실손의료비보험",
+        "policy_no": "DEMO-004",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "실손",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "삼성화재",
+        "product_name": "시연용 운전자보험",
+        "policy_no": "DEMO-005",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "운전자",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "현대해상",
+        "product_name": "시연용 상해보험",
+        "policy_no": "DEMO-006",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "기타",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "현대해상",
+        "product_name": "시연용 실손의료비보험",
+        "policy_no": "DEMO-007",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "실손",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "KB손해보험",
+        "product_name": "시연용 실손의료비보험",
+        "policy_no": "DEMO-008",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "실손",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "KB손해보험",
+        "product_name": "시연용 암보험",
+        "policy_no": "DEMO-009",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "기타",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "DB손해보험",
+        "product_name": "시연용 실손의료비보험",
+        "policy_no": "DEMO-010",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "실손",
+        "include_for_claim_review": True,
+    },
+    {
+        "company": "DB손해보험",
+        "product_name": "시연용 운전자보험",
+        "policy_no": "DEMO-011",
+        "status": "유지",
+        "role": "피보험자",
+        "category": "운전자",
+        "include_for_claim_review": True,
+    },
+]
+
+
+def _request_insurance_history_demo(flow_id: str) -> None:
+    """향후 신용정보원·제휴 API 연동 시 이 함수에 외부 호출을 연결합니다."""
+    del flow_id  # noqa: ARG001
+
+
+def _apply_insurance_demo_complete(entry: dict[str, Any]) -> None:
+    records = [dict(r) for r in _INSURANCE_SAMPLE_RECORDS]
+    entry["insurance_status"] = "completed"
+    entry["insurance_summary"] = {
+        "total": 11,
+        "insured_valid": 10,
+        "company_count": 5,
+    }
+    entry["insurance_records"] = records
+    entry.pop("insurance_message", None)
+
+
+def _clear_insurance_temp_fields(entry: dict[str, Any]) -> None:
+    for key in ("insurance_message", "insurance_summary", "insurance_records"):
+        entry.pop(key, None)
+
+
+def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any]:
+    status = entry.get("insurance_status") or "pending"
+    customer = entry.get("customer") or {}
+    summary = entry.get("insurance_summary") or {"total": 0, "insured_valid": 0, "company_count": 0}
+    records = list(entry.get("insurance_records") or []) if status == "completed" else []
+    return {
+        "current_step": 4,
+        "flow_id": fid,
+        "debug_panel": _debug_panel(),
+        "demo_complete_allowed": _demo_complete_allowed(),
+        "customer_display": _build_customer_display(customer),
+        "insurance_status": status,
+        "insurance_message": entry.get("insurance_message"),
+        "insurance_summary": summary,
+        "insurance_records": records,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -258,6 +680,7 @@ def hospital_customer_post(
         "created_in_final": True,
         "medical_status": "pending",
         "insurance_status": "pending",
+        "second_status": "idle",
     }
 
     return RedirectResponse(
@@ -277,7 +700,10 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
     customer = entry.get("customer") or {}
     customer_display = _build_customer_display(customer)
     counts = entry.get("medical_result_counts") or {"basic": 0, "detail": 0, "prescribe": 0}
-    records = list(entry.get("medical_records") or []) if status == "completed" else []
+    records_preview: list[dict[str, str]] = []
+    if status == "completed":
+        records_preview = _medical_records_preview(entry, limit=10)
+    show_hira_modal, hira_modal_step = _hira_modal_context(entry)
 
     return templates.TemplateResponse(
         request,
@@ -285,46 +711,152 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
         {
             "current_step": 3,
             "flow_id": fid,
-            "debug_panel": False,
+            "debug_panel": _debug_panel(),
             "customer_display": customer_display,
             "medical_status": status,
             "medical_message": entry.get("medical_message"),
             "medical_result_counts": counts,
-            "medical_records": records,
+            "medical_records": records_preview,
+            "medical_records_preview": records_preview,
+            "codef_debug": _hira_codef_debug_context(entry),
+            "show_hira_modal": show_hira_modal,
+            "hira_modal_step": hira_modal_step,
         },
     )
 
 
 @app.post("/hospital/hira-auth-request")
 def hospital_hira_auth_request(flow_id: str | None = None):
-    """진료내역 조회 카카오 인증 요청(데모: CODEF 미연동)."""
+    """진료내역 조회 카카오 인증 요청(DEMO_MODE: 시뮬레이션, 그 외: CODEF 1차)."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
-    if entry.get("medical_status") != "pending":
+    status = entry.get("medical_status") or "pending"
+    if status not in ("pending", "waiting_auth", "waiting_auth_debug_needed", "failed"):
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
-    _request_hira_auth_demo(fid)
-    entry["medical_status"] = "waiting_auth"
-    entry["medical_auth_requested"] = True
-    entry["medical_message"] = "카카오 인증 요청이 발송되었습니다."
+    if status != "pending":
+        _clear_hira_codef_fields(entry)
+        entry["medical_status"] = "pending"
+
+    if DEMO_MODE:
+        _request_hira_auth_demo(fid)
+        _apply_hira_waiting_auth(
+            entry,
+            result={"code": "DEMO", "message": "데모 모드"},
+            extracted={
+                "continue2Way": True,
+                "method": "simpleAuth",
+                "twoWayInfo": {"jobIndex": 0, "threadIndex": 0, "jti": "demo", "twoWayTimestamp": 0},
+                "twoWayInfo_found": True,
+                "root_keys": [],
+                "data_keys": [],
+            },
+        )
+    else:
+        try:
+            _request_hira_auth_codef(fid, entry)
+        except CodefClientError as exc:
+            _apply_hira_auth_failed(
+                entry,
+                result_code=exc.code or "CLIENT_ERROR",
+                result_message=exc.message,
+                user_message=exc.message,
+            )
+
     return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
 
 
 @app.post("/hospital/hira-complete-auth")
 def hospital_hira_complete_auth(flow_id: str | None = None):
-    """데모: 인증 완료 후 진료내역 수신 완료 처리."""
+    """인증 완료 후 진료내역 수신(DEMO_MODE: 샘플, 그 외: CODEF 2차)."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
-    if entry.get("medical_status") != "waiting_auth":
-        entry["medical_status"] = "failed"
-        entry["medical_message"] = "인증 및 조회 순서가 올바르지 않아 처리할 수 없습니다."
+
+    second_status = entry.get("second_status") or "idle"
+    if entry.get("medical_status") == "completed" or second_status == "completed":
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
-    entry["medical_status"] = "completed"
-    entry["medical_result_counts"] = {"basic": 113, "detail": 703, "prescribe": 382}
-    entry["medical_records"] = list(_MEDICAL_SAMPLE_RECORDS)
+    if second_status == "in_progress":
+        entry["medical_message"] = "진료내역 조회가 이미 진행 중입니다. 잠시 후 다시 확인해 주세요."
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+
+    if DEMO_MODE:
+        if entry.get("medical_status") != "waiting_auth":
+            entry["medical_status"] = "failed"
+            entry["medical_message"] = "인증 및 조회 순서가 올바르지 않아 처리할 수 없습니다."
+        else:
+            _complete_hira_demo(entry)
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+
+    medical_status = entry.get("medical_status")
+    if medical_status not in ("waiting_auth", "waiting_auth_debug_needed"):
+        _apply_hira_second_failed(
+            entry,
+            result_code="STATE_ERROR",
+            result_message="medical_status is not waiting_auth",
+            user_message=(
+                f"현재 진료내역 조회 상태({medical_status})에서는 "
+                "인증 완료 처리를 할 수 없습니다."
+            ),
+        )
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+
+    two_way_info = entry.get("two_way_info")
+    if not two_way_info:
+        entry["codef_second_result_code"] = "NO_TWO_WAY"
+        entry["codef_second_result_message"] = "twoWayInfo missing"
+        entry["medical_message"] = (
+            "2차 인증 정보(twoWayInfo)가 저장되지 않아 조회를 진행할 수 없습니다. "
+            "1차 「카카오 인증 요청」을 다시 시도하거나, DEBUG 정보를 확인해 주세요."
+        )
+        if medical_status != "waiting_auth_debug_needed":
+            entry["medical_status"] = "waiting_auth_debug_needed"
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+
+    first_payload = _get_hira_first_payload(fid, entry)
+    entry["second_status"] = "in_progress"
+
+    api_result = post_hira_medical_second(first_payload, two_way_info)
+    result_code = str(api_result.get("result_code") or "")
+    result_message = str(api_result.get("result_message") or "")
+
+    if api_result.get("status_code") == 0 and result_code == "CLIENT_ERROR":
+        _apply_hira_second_failed(
+            entry,
+            result_code=result_code,
+            result_message=result_message,
+            user_message=result_message or "CODEF 통신 중 오류가 발생했습니다.",
+        )
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+
+    parsed = api_result.get("parsed")
+    if parsed is None:
+        _apply_hira_second_failed(
+            entry,
+            result_code=result_code or "PARSE_ERROR",
+            result_message=result_message,
+            user_message="CODEF 응답을 해석하지 못했습니다.",
+        )
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+
+    if not api_result.get("ok"):
+        _apply_hira_second_failed(
+            entry,
+            result_code=result_code,
+            result_message=result_message,
+            user_message=user_message_for_second_failure(result_code, result_message),
+        )
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+
+    lists = extract_hira_medical_lists(parsed)
+    _apply_hira_second_completed(
+        entry,
+        lists=lists,
+        result_code=result_code,
+        result_message=result_message,
+    )
     return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
 
 
@@ -337,16 +869,13 @@ def hospital_hira_retry(flow_id: str | None = None):
     entry = FLOW_STORE[fid]
     if entry.get("medical_status") == "failed":
         entry["medical_status"] = "pending"
-        entry["medical_auth_requested"] = False
-        entry.pop("medical_message", None)
-        entry.pop("medical_result_counts", None)
-        entry.pop("medical_records", None)
+        _clear_hira_codef_fields(entry)
     return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
 
 
 @app.get("/hospital/insurance-request", response_class=HTMLResponse)
 def hospital_insurance_request_get(request: Request, flow_id: str | None = None):
-    """보험가입이력 4단계 최소 스텁(추후 확장)."""
+    """병원용 4단계 보험가입이력 가져오기."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
@@ -355,11 +884,81 @@ def hospital_insurance_request_get(request: Request, flow_id: str | None = None)
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
     return templates.TemplateResponse(
         request,
-        "insurance_request_stub.html",
+        "insurance_request.html",
+        _insurance_request_context(entry, fid),
+    )
+
+
+@app.post("/hospital/insurance-request/start")
+def hospital_insurance_request_start(flow_id: str | None = None):
+    """보험가입이력 조회 시작(데모: 외부 API 미연동)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if entry.get("medical_status") != "completed":
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+    if entry.get("insurance_status") != "pending":
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    _request_insurance_history_demo(fid)
+    entry["insurance_status"] = "in_progress"
+    entry["insurance_message"] = "보험가입이력 조회를 시작했습니다."
+    return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+
+@app.post("/hospital/insurance-request/complete")
+def hospital_insurance_request_complete(flow_id: str | None = None):
+    """데모·디버그 모드에서만 샘플 완료 처리."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if entry.get("medical_status") != "completed":
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+    if not _demo_complete_allowed():
+        entry["insurance_message"] = (
+            "상용 모드에서는 외부 API 조회 결과 없이 완료 처리할 수 없습니다."
+        )
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    if entry.get("insurance_status") != "in_progress":
+        entry["insurance_status"] = "failed"
+        entry["insurance_message"] = "조회 순서가 올바르지 않아 완료 처리할 수 없습니다."
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    _apply_insurance_demo_complete(entry)
+    return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+
+@app.post("/hospital/insurance-request/retry")
+def hospital_insurance_request_retry(flow_id: str | None = None):
+    """보험가입이력 조회 실패 후 다시 시도."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if entry.get("insurance_status") == "failed":
+        entry["insurance_status"] = "pending"
+        _clear_insurance_temp_fields(entry)
+    return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+
+@app.get("/hospital/analysis-ready", response_class=HTMLResponse)
+def hospital_analysis_ready_get(request: Request, flow_id: str | None = None):
+    """통합 결과확인 5단계 최소 스텁(추후 확장)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if entry.get("medical_status") != "completed":
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+    if entry.get("insurance_status") != "completed":
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "analysis_ready_stub.html",
         {
-            "current_step": 4,
+            "current_step": 5,
             "flow_id": fid,
-            "debug_panel": False,
+            "debug_panel": _debug_panel(),
         },
     )
 

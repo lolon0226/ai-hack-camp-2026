@@ -966,6 +966,49 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   text-align: center;
 }
 
+.hospital-hira-state__desc--code {
+  font-size: 0.78rem;
+  color: #6b7280;
+}
+
+.hospital-hira-debug {
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.75rem;
+  background: #f4f6f9;
+  border: 1px dashed #cfd6e4;
+  border-radius: 0.4rem;
+  font-size: 0.72rem;
+}
+
+.hospital-hira-debug__title {
+  margin: 0 0 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--rr-muted);
+}
+
+.hospital-hira-debug__dl {
+  margin: 0;
+}
+
+.hospital-hira-debug__row {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 0.25rem 0.5rem;
+  padding: 0.2rem 0;
+}
+
+.hospital-hira-debug__row dt {
+  margin: 0;
+  font-weight: 700;
+  color: var(--rr-muted);
+}
+
+.hospital-hira-debug__row dd {
+  margin: 0;
+  word-break: break-all;
+}
+
 .hospital-hira-counts {
   list-style: none;
   margin: 0 0 1rem;
@@ -1010,6 +1053,207 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   border-bottom: none;
 }
 
+.hospital-hira-debug--page {
+  margin-top: 1rem;
+}
+
+/* ----- 진료내역 카카오 인증 모달 ----- */
+.hira-modal-body-lock {
+  overflow: hidden;
+}
+
+.hira-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.hira-modal--open {
+  display: flex;
+}
+
+.hira-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.hira-modal__dialog {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 22rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 0.65rem;
+  padding: 1.25rem 1.15rem 1.1rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  text-align: center;
+}
+
+.hira-modal__dialog--expanded {
+  max-width: 32rem;
+  text-align: left;
+}
+
+.hira-modal__close {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.55rem;
+  border: none;
+  background: transparent;
+  font-size: 1.35rem;
+  line-height: 1;
+  color: var(--rr-muted);
+  cursor: pointer;
+  padding: 0.15rem 0.35rem;
+}
+
+.hira-modal__title {
+  margin: 0 0 0.55rem;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--rr-ink);
+}
+
+.hira-modal__title--error {
+  color: #9a1530;
+}
+
+.hira-modal__text {
+  margin: 0 0 0.45rem;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: #3a4150;
+}
+
+.hira-modal__hint {
+  margin: 0 0 1rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--rr-muted);
+}
+
+.hira-modal__icon {
+  font-size: 2rem;
+  margin-bottom: 0.35rem;
+}
+
+.hira-modal__icon--kakao {
+  color: #3c1e1e;
+}
+
+.hira-modal__icon--done {
+  color: var(--rr-red);
+  font-weight: 800;
+}
+
+.hira-modal__form,
+.hira-modal__next,
+.hira-modal__actions {
+  margin-top: 0.65rem;
+}
+
+.hira-modal__counts {
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  color: #3a4150;
+  text-align: left;
+}
+
+.hira-modal__counts li + li {
+  margin-top: 0.2rem;
+}
+
+.hira-modal-result-panel {
+  display: none;
+  margin-top: 0.85rem;
+  text-align: left;
+}
+
+.hira-modal-result-panel--open {
+  display: block;
+}
+
+.hira-modal-result-panel__title {
+  margin: 0 0 0.45rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--rr-ink);
+}
+
+.hira-modal-result-panel__empty {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--rr-muted);
+}
+
+.hira-modal-result-panel__table-wrap {
+  max-height: 11.5rem;
+  overflow: auto;
+  border: 1px solid #e8ecf2;
+  border-radius: 0.4rem;
+}
+
+.hira-modal-result-panel__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.hira-modal-result-panel__table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f6f8fb;
+  font-weight: 700;
+  text-align: left;
+  padding: 0.35rem 0.4rem;
+  border-bottom: 1px solid #e2e7ef;
+  white-space: nowrap;
+}
+
+.hira-modal-result-panel__table tbody td {
+  padding: 0.32rem 0.4rem;
+  border-bottom: 1px solid #eef1f6;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.hira-modal-result-panel__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.hira-modal__btn {
+  width: 100%;
+  margin-top: 0.45rem;
+}
+
+.hira-modal__spinner {
+  width: 2.5rem;
+  height: 2.5rem;
+  margin: 0 auto 0.75rem;
+  border: 3px solid #eef1f6;
+  border-top-color: var(--rr-red);
+  border-radius: 50%;
+  animation: hira-modal-spin 0.75s linear infinite;
+}
+
+@keyframes hira-modal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .hospital-insurance-stub-page {
   min-height: 100vh;
   display: flex;
@@ -1045,7 +1289,240 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   line-height: 1.5;
 }
 
+/* ----- 병원용 보험가입이력 (/hospital/insurance-request) ----- */
+.hospital-insurance-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  background: #f4f6f9;
+  color: var(--rr-ink);
+}
+
+.hospital-insurance-main {
+  flex: 1;
+  width: 100%;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0.85rem 1.25rem 1.25rem;
+}
+
+.hospital-insurance-hero {
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+.hospital-insurance-title {
+  margin: 0 0 0.5rem;
+  font-size: clamp(1.2rem, 2.5vw, 1.5rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.hospital-insurance-sub {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: #3a4150;
+}
+
+.hospital-insurance-notice {
+  background: #f8fafc;
+  border: 1px solid #dbe3f0;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.hospital-insurance-notice__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.hospital-insurance-notice__list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--rr-muted);
+}
+
+.hospital-insurance-notice__list li {
+  margin-bottom: 0.35rem;
+}
+
+.hospital-insurance-notice__list li:last-child {
+  margin-bottom: 0;
+}
+
+.hospital-form-error--info {
+  color: #1a4d7a;
+  background: #eef6fc;
+  border-color: #c5dff0;
+}
+
+.hospital-insurance-state {
+  background: #fff;
+  border: 1px solid var(--rr-line);
+  border-radius: 0.5rem;
+  padding: 1rem 1rem 1.1rem;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.05);
+}
+
+.hospital-insurance-state__lead {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.hospital-insurance-state__lead--error {
+  color: #9a1530;
+}
+
+.hospital-insurance-state__desc,
+.hospital-insurance-state__hint {
+  margin: 0 0 1rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--rr-muted);
+  text-align: center;
+}
+
+.hospital-insurance-state__hint {
+  margin-top: 0.65rem;
+  margin-bottom: 0;
+  font-size: 0.72rem;
+}
+
+.hospital-insurance-state__form {
+  margin: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.hospital-insurance-state__btn {
+  min-width: min(100%, 18rem);
+}
+
+.hospital-insurance-state__next {
+  margin: 1rem 0 0;
+  text-align: center;
+}
+
+.hospital-insurance-summary-counts {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  text-align: center;
+  font-size: 0.88rem;
+  line-height: 1.65;
+}
+
+.hospital-insurance-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--rr-line);
+  border-radius: 0.4rem;
+}
+
+.hospital-insurance-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.7rem;
+}
+
+.hospital-insurance-table th,
+.hospital-insurance-table td {
+  padding: 0.45rem 0.35rem;
+  border-bottom: 1px solid var(--rr-line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.hospital-insurance-table th {
+  background: var(--rr-bg-soft);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.hospital-insurance-table__row--excluded {
+  background: #fafbfc;
+  color: var(--rr-muted);
+}
+
+.hospital-insurance-badge {
+  display: inline-block;
+  padding: 0.12rem 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  border-radius: 0.25rem;
+  white-space: nowrap;
+}
+
+.hospital-insurance-badge--include {
+  background: #fff0f2;
+  color: var(--rr-red-dark);
+}
+
+.hospital-insurance-badge--exclude {
+  background: #eef1f6;
+  color: #6b7280;
+}
+
+.hospital-insurance-badge--ref {
+  background: #fff8e6;
+  color: #8a6d1a;
+}
+
+.hospital-analysis-stub-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  background: #f4f6f9;
+  color: var(--rr-ink);
+}
+
+.hospital-analysis-stub-main {
+  flex: 1;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 0.85rem 1.25rem 1.25rem;
+  width: 100%;
+}
+
+.hospital-analysis-stub-hero {
+  text-align: center;
+  margin-top: 0.5rem;
+}
+
+.hospital-analysis-stub-title {
+  margin: 0 0 0.75rem;
+  font-size: clamp(1.1rem, 2.2vw, 1.35rem);
+  font-weight: 800;
+}
+
+.hospital-analysis-stub-lead {
+  margin: 0 0 0.65rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--rr-ink);
+}
+
+.hospital-analysis-stub-note {
+  margin: 0 0 1.25rem;
+  font-size: 0.82rem;
+  color: var(--rr-muted);
+}
+
 @media (max-width: 720px) {
+  .hospital-insurance-main {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
   .hospital-hira-main {
     padding-left: 1rem;
     padding-right: 1rem;

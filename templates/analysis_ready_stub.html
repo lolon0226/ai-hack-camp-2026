@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>보험가입이력 · 래드리본 병원용</title>
+  <title>통합 결과확인 · 래드리본 병원용</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body class="hospital-insurance-stub-page">
+<body class="hospital-analysis-stub-page">
   <header class="hospital-start-header">
     <div class="hospital-start-header__inner">
       <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
@@ -20,13 +20,18 @@
     </div>
   </header>
 
-  <main class="hospital-insurance-stub-main">
+  <main class="hospital-analysis-stub-main">
     {% include "partials/step_bar.html" %}
 
-    <section class="hospital-insurance-stub-hero" aria-labelledby="insurance-stub-title">
-      <h1 id="insurance-stub-title" class="hospital-insurance-stub-title">다음 단계: 보험가입이력 가져오기</h1>
-      <p class="hospital-insurance-stub-lead">이 화면은 다음 작업에서 확장 예정입니다.</p>
-      <p><a class="btn btn--ghost" href="/hospital/hira-start?flow_id={{ flow_id }}">진료내역 단계로 돌아가기</a></p>
+    <section class="hospital-analysis-stub-hero" aria-labelledby="analysis-stub-title">
+      <h1 id="analysis-stub-title" class="hospital-analysis-stub-title">다음 단계: 통합 결과확인</h1>
+      <p class="hospital-analysis-stub-lead">
+        진료내역과 보험가입이력을 결합해 청구 가능성 분석 준비를 진행합니다.
+      </p>
+      <p class="hospital-analysis-stub-note">이 화면은 다음 작업에서 확장 예정입니다.</p>
+      <p>
+        <a class="btn btn--ghost" href="/hospital/insurance-request?flow_id={{ flow_id }}">보험가입이력 단계로 돌아가기</a>
+      </p>
     </section>
   </main>
 
