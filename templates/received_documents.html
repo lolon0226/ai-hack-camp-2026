@@ -40,6 +40,7 @@
           <thead>
             <tr>
               <th scope="col">문서</th>
+              <th scope="col">병원명</th>
               <th scope="col">고객 연결</th>
               <th scope="col">OCR</th>
               <th scope="col">문서종류 후보</th>
@@ -51,11 +52,12 @@
             {% for doc in documents %}
             <tr>
               <td>{{ doc.document_title }}</td>
+              <td>{{ doc.hospital_name_display }}</td>
               <td>
-                {% if doc.customer_key %}
-                <a href="/operator/actual-loss-claim-package?customer_id={{ doc.customer_key }}">{{ doc.linked_customer_name or '고객' }}</a>
+                {% if doc.customer_key and doc.customer_link_linked %}
+                <a href="/operator/actual-loss-claim-package?customer_id={{ doc.customer_key }}">{{ doc.customer_link_label }}</a>
                 {% else %}
-                {{ doc.linked_customer_name or '미연결' }}
+                {{ doc.customer_link_label }}
                 {% endif %}
               </td>
               <td><span class="operator-pill operator-pill--{{ doc.ocr_status }}">{{ doc.ocr_status }}</span></td>
@@ -67,7 +69,7 @@
                 —
                 {% endif %}
               </td>
-              <td>{{ doc.created_at }}</td>
+              <td>{{ doc.received_at_display }}</td>
             </tr>
             {% endfor %}
           </tbody>

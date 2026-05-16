@@ -144,6 +144,7 @@ from services.persistent_store import (  # noqa: E402
     make_customer_key,
     rebuild_insurance_summary_for_customer,
     normalize_customer_fields,
+    print_receiver_received_at_utc,
     register_print_receiver_upload,
     save_actual_loss_claim_demo_state,
     save_customer,
@@ -2895,14 +2896,18 @@ async def api_print_receiver_upload(
     stored_path = day_dir / stored_name
     stored_path.write_bytes(content)
 
+    received_at = print_receiver_received_at_utc()
+    if not received_at.strip():
+        received_at = print_receiver_received_at_utc()
     reg = register_print_receiver_upload(
         stored_path=str(stored_path.resolve()),
         original_filename=filename,
         file_sha256=digest,
+        received_at=received_at,
         hospital_name=(hospital_name or "").strip(),
         printer_name=(printer_name or "").strip(),
         customer_key=(customer_key or "").strip() or None,
-        linked_customer_name=(linked_customer_name or hospital_name or "").strip(),
+        linked_customer_name=(linked_customer_name or "").strip(),
     )
     doc = reg.get("document") or {}
     return JSONResponse(
@@ -2911,6 +2916,7 @@ async def api_print_receiver_upload(
             "duplicate": bool(reg.get("duplicate")),
             "document_id": reg.get("document_id"),
             "sha256": digest,
+            "received_at": received_at,
             "file_url": doc.get("file_url"),
             "message": (
                 "duplicate_skipped"

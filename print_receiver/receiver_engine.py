@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sys
 import time
@@ -218,6 +219,7 @@ def process_one_file(
         logger.info("이미 업로드한 파일(sha256) — uploaded로 이동: %s", path.name)
         dest = uploaded / f"{digest[:12]}_{path.name}"
         shutil.move(str(path), str(dest))
+        os.utime(dest, None)
         return
 
     if not wait_until_stable(
@@ -241,6 +243,7 @@ def process_one_file(
         suffix = "duplicate" if result.get("duplicate") else "ok"
         target = uploaded / f"{suffix}_{digest[:12]}_{working.name}"
         shutil.move(str(working), str(target))
+        os.utime(target, None)
         logger.info(
             "업로드 성공 doc_id=%s duplicate=%s file=%s",
             result.get("document_id"),

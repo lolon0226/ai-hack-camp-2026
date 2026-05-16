@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +31,106 @@ class PersistentStoreConfigError(RuntimeError):
     """REDRIBBON_SEARCH_HASH_SECRET 등 필수 설정 누락."""
 
 
+_KST = timezone(timedelta(hours=9))
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def print_receiver_received_at_utc() -> str:
+    """Print Receiver 업로드 수신 시각(UTC, Z 접미)."""
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def format_received_at_kst(received_at: str) -> str:
+    """UTC received_at → 한국시간 표시 (예: 2026-05-16 22:22:13)."""
+    raw = str(received_at or "").strip()
+    if not raw:
+        return "—"
+    try:
+        if raw.endswith("Z"):
+            dt = datetime.fromisoformat(raw[:-1] + "+00:00")
+        else:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_KST).strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return raw
+
+
+_HOSPITAL_LABELS_NOT_CUSTOMER = frozenset({"TEST_HOSPITAL"})
+
+
+def _parse_received_document_metadata(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _is_hospital_label_not_customer(name: str, hospital_name: str = "") -> bool:
+    label = str(name or "").strip()
+    if not label or label == "—":
+        return False
+    if label.upper() in _HOSPITAL_LABELS_NOT_CUSTOMER:
+        return True
+    hospital = str(hospital_name or "").strip()
+    if hospital and label == hospital:
+        return True
+    return False
+
+
+def enrich_operator_received_document_for_display(
+    doc: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """수신문서함: 병원명·고객 연결·수신 시각 표시 필드 정리."""
+    meta = metadata if metadata is not None else _parse_received_document_metadata(
+        doc.get("metadata_json")
+    )
+    hospital_name = str(meta.get("hospital_name") or "").strip()
+    linked_name = str(doc.get("linked_customer_name") or "").strip()
+    if linked_name == "—":
+        linked_name = ""
+
+    if not hospital_name and linked_name and _is_hospital_label_not_customer(linked_name):
+        hospital_name = linked_name
+        linked_name = ""
+
+    customer_key = doc.get("customer_key")
+    if customer_key:
+        if linked_name and not _is_hospital_label_not_customer(linked_name, hospital_name):
+            customer_label = linked_name
+        else:
+            customer_label = "고객"
+        customer_link_linked = True
+    elif linked_name and not _is_hospital_label_not_customer(linked_name, hospital_name):
+        customer_label = "고객 확인 필요"
+        customer_link_linked = False
+    else:
+        customer_label = "미연결"
+        customer_link_linked = False
+
+    received_at = str(doc.get("received_at") or "").strip()
+    if not received_at:
+        received_at = (
+            str(doc.get("created_at") or "").strip() or print_receiver_received_at_utc()
+        )
+        doc["received_at"] = received_at
+
+    doc["hospital_name_display"] = hospital_name or "—"
+    doc["customer_link_label"] = customer_label
+    doc["customer_link_linked"] = customer_link_linked
+    doc["received_at_display"] = format_received_at_kst(received_at)
+    return doc
 
 
 def is_search_hash_secret_configured() -> bool:
@@ -193,6 +291,23 @@ def _migrate_operator_received_documents_columns(conn: sqlite3.Connection) -> No
             """
             CREATE INDEX IF NOT EXISTS idx_operator_received_documents_sha
             ON operator_received_documents (file_sha256)
+            """
+        )
+    if "received_at" not in columns:
+        conn.execute(
+            "ALTER TABLE operator_received_documents ADD COLUMN received_at TEXT"
+        )
+        conn.execute(
+            """
+            UPDATE operator_received_documents
+            SET received_at = created_at
+            WHERE received_at IS NULL OR received_at = ''
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_operator_received_documents_received_at
+            ON operator_received_documents (received_at DESC)
             """
         )
 
@@ -899,10 +1014,11 @@ def list_operator_received_documents(
             rows = conn.execute(
                 """
                 SELECT id, customer_key, document_title, document_type_candidate,
-                       ocr_status, file_path, file_url, linked_customer_name, created_at
+                       ocr_status, file_path, file_url, linked_customer_name, created_at,
+                       received_at, metadata_json
                 FROM operator_received_documents
                 WHERE customer_key = ?
-                ORDER BY created_at DESC, id DESC
+                ORDER BY COALESCE(received_at, created_at) DESC, id DESC
                 LIMIT ?
                 """,
                 (str(customer_key).strip(), max(1, min(int(limit), 500))),
@@ -911,16 +1027,20 @@ def list_operator_received_documents(
             rows = conn.execute(
                 """
                 SELECT id, customer_key, document_title, document_type_candidate,
-                       ocr_status, file_path, file_url, linked_customer_name, created_at
+                       ocr_status, file_path, file_url, linked_customer_name, created_at,
+                       received_at, metadata_json
                 FROM operator_received_documents
-                ORDER BY created_at DESC, id DESC
+                ORDER BY COALESCE(received_at, created_at) DESC, id DESC
                 LIMIT ?
                 """,
                 (max(1, min(int(limit), 500)),),
             ).fetchall()
     finally:
         conn.close()
-    return [_received_document_row_to_dict(row) for row in rows]
+    return [
+        enrich_operator_received_document_for_display(_received_document_row_to_dict(row))
+        for row in rows
+    ]
 
 
 def _received_document_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -929,6 +1049,11 @@ def _received_document_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
     file_url = str(row[6] or "").strip()
     if not file_url and file_path:
         file_url = f"/operator/received-documents/{doc_id}/file"
+    created_at = str(row[8] or "").strip()
+    received_at = str(row[9] or "").strip() if len(row) > 9 else ""
+    metadata_json = str(row[10] or "") if len(row) > 10 else ""
+    if not received_at:
+        received_at = created_at
     return {
         "id": doc_id,
         "customer_key": str(row[1] or "").strip() or None,
@@ -938,7 +1063,9 @@ def _received_document_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
         "file_path": file_path,
         "file_url": file_url,
         "linked_customer_name": str(row[7] or "").strip() or "—",
-        "created_at": str(row[8] or ""),
+        "created_at": created_at,
+        "received_at": received_at,
+        "metadata_json": metadata_json,
     }
 
 
@@ -952,7 +1079,8 @@ def find_received_document_by_sha256(file_sha256: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT id, customer_key, document_title, document_type_candidate,
-                   ocr_status, file_path, file_url, linked_customer_name, created_at
+                   ocr_status, file_path, file_url, linked_customer_name, created_at,
+                   received_at, metadata_json
             FROM operator_received_documents
             WHERE file_sha256 = ?
             ORDER BY id DESC
@@ -964,7 +1092,7 @@ def find_received_document_by_sha256(file_sha256: str) -> dict[str, Any] | None:
         conn.close()
     if not row:
         return None
-    return _received_document_row_to_dict(row)
+    return enrich_operator_received_document_for_display(_received_document_row_to_dict(row))
 
 
 def register_print_receiver_upload(
@@ -972,6 +1100,7 @@ def register_print_receiver_upload(
     stored_path: str,
     original_filename: str,
     file_sha256: str,
+    received_at: str,
     hospital_name: str = "",
     printer_name: str = "",
     customer_key: str | None = None,
@@ -979,6 +1108,7 @@ def register_print_receiver_upload(
     document_type_candidate: str = "",
 ) -> dict[str, Any]:
     """Print Receiver 업로드 등록(sha256 중복 시 기존 문서 반환)."""
+    received_at = str(received_at or "").strip() or print_receiver_received_at_utc()
     digest = str(file_sha256 or "").strip().lower()
     existing = find_received_document_by_sha256(digest) if digest else None
     if existing:
@@ -1014,9 +1144,10 @@ def register_print_receiver_upload(
         ocr_status="pending",
         file_path=stored_path,
         file_url="",
-        linked_customer_name=linked_customer_name or hospital_name,
+        linked_customer_name=str(linked_customer_name or "").strip(),
         file_sha256=digest,
         metadata_json=metadata,
+        received_at=received_at,
     )
     doc = get_received_document_by_id(doc_id)
     return {
@@ -1037,17 +1168,19 @@ def upsert_operator_received_document(
     linked_customer_name: str = "",
     file_sha256: str = "",
     metadata_json: dict[str, Any] | str | None = None,
+    received_at: str | None = None,
 ) -> int:
     _ensure_db_schema()
-    now = _utc_now_iso()
+    received_ts = str(received_at or "").strip() or print_receiver_received_at_utc()
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.execute(
             """
             INSERT INTO operator_received_documents (
                 customer_key, document_title, document_type_candidate, ocr_status,
-                file_path, file_url, linked_customer_name, file_sha256, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                file_path, file_url, linked_customer_name, file_sha256, metadata_json,
+                created_at, received_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(customer_key or "").strip() or None,
@@ -1061,7 +1194,8 @@ def upsert_operator_received_document(
                 json.dumps(metadata_json or {}, ensure_ascii=False)
                 if isinstance(metadata_json, dict)
                 else str(metadata_json or "{}"),
-                now,
+                received_ts,
+                received_ts,
             ),
         )
         conn.commit()
@@ -1103,7 +1237,8 @@ def get_received_document_by_id(document_id: int) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT id, customer_key, document_title, document_type_candidate,
-                   ocr_status, file_path, file_url, linked_customer_name, created_at
+                   ocr_status, file_path, file_url, linked_customer_name, created_at,
+                   received_at, metadata_json
             FROM operator_received_documents
             WHERE id = ?
             """,
@@ -1113,7 +1248,7 @@ def get_received_document_by_id(document_id: int) -> dict[str, Any] | None:
         conn.close()
     if not row:
         return None
-    return _received_document_row_to_dict(row)
+    return enrich_operator_received_document_for_display(_received_document_row_to_dict(row))
 
 
 def load_actual_loss_claim_demo_state(customer_key: str) -> dict[str, Any] | None:
