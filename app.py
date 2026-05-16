@@ -79,6 +79,11 @@ from services.credit4u_identity import (
     validate_credit4u_id,
     verify_persisted_credit4u_credentials,
 )
+from services.integrated_analysis import (
+    build_ai_analysis_context,
+    execute_ai_claim_analysis,
+    build_analysis_ready_context,
+)
 from services.insurance_summary import (
     build_insurance_company_groups,
     flatten_imported_insurance_records,
@@ -113,6 +118,7 @@ from services.persistent_store import (  # noqa: E402
     has_stored_credit4u_credentials,
     load_latest_insurance_records,
     load_latest_medical_records,
+    rebuild_insurance_summary_for_customer,
     normalize_customer_fields,
     save_customer,
     save_insurance_records,
@@ -610,7 +616,12 @@ def _normalize_basic_medical_row(raw: Any) -> dict[str, str]:
         "main_diagnosis": main_diagnosis,
         "diagnosis": main_diagnosis,
         "copay_amount": _pick_medical_field(
-            raw, "resPaidAmount", "resSelfPayAmount", "patient_paid_amount", "copay_amount"
+            raw,
+            "resDeductibleAmt",
+            "resPaidAmount",
+            "resSelfPayAmount",
+            "patient_paid_amount",
+            "copay_amount",
         ),
     }
 
@@ -2381,9 +2392,12 @@ def _apply_saved_insurance_records_to_entry(
         normalized_payload,
         saved.get("summary"),
         customer_name,
+        raw_response=saved.get("raw_response"),
     )
-    if not display.get("insurance_records"):
-        return False
+    insured_summary = display.get("insured_summary")
+    if not isinstance(insured_summary, dict) or not insured_summary.get("company_groups"):
+        if not display.get("flat_record_count"):
+            return False
 
     entry["insurance_status"] = "completed"
     entry["insurance_stage"] = "completed"
@@ -2396,9 +2410,11 @@ def _apply_saved_insurance_records_to_entry(
     entry["loaded_insurance_record_flow_id"] = str(saved.get("flow_id") or "")
     entry["insurance_result_raw"] = saved.get("raw_response")
     entry["insurance_result"] = normalized_payload
-    entry["insurance_records"] = display["insurance_records"]
-    entry["insurance_company_groups"] = display["insurance_company_groups"]
-    entry["insurance_summary"] = display["insurance_summary"]
+    entry["insurance_records"] = display.get("insurance_records") or []
+    entry["insured_summary"] = insured_summary
+    entry["insurance_company_groups"] = display.get("insurance_company_groups") or []
+    entry["insurance_summary"] = display.get("insurance_summary") or {}
+    entry["insurance_summary_debug"] = (insured_summary or {}).get("debug") or {}
     entry["credit4u_second_status"] = "completed"
     entry.pop("insurance_error_code", None)
     return True
@@ -2439,21 +2455,54 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
         )
     status = entry.get("insurance_status") or "pending"
     customer = entry.get("customer") or {}
-    summary = entry.get("insurance_summary") or {"total": 0, "insured_valid": 0, "company_count": 0}
+    summary = entry.get("insurance_summary") or {
+        "total": 0,
+        "insured_valid": 0,
+        "company_count": 0,
+        "coverage_count": 0,
+    }
     records: list[dict[str, Any]] = []
     company_groups: list[dict[str, Any]] = []
+    insured_summary: dict[str, Any] = {}
+    insurance_summary_debug: dict[str, Any] = {}
     if status == "completed":
         customer_name = str((customer.get("name") or ""))
-        stored_records = list(entry.get("insurance_records") or [])
-        stored_groups = entry.get("insurance_company_groups")
-        if isinstance(stored_groups, list) and stored_groups:
-            records = stored_records
-            company_groups = prepare_insurance_company_groups_for_template(stored_groups)
-        else:
-            records, company_groups = build_insurance_company_groups(
-                stored_records,
-                customer_name,
+        insured_summary = entry.get("insured_summary")
+        if not isinstance(insured_summary, dict) or not insured_summary.get("company_groups"):
+            saved = (
+                load_latest_insurance_records(customer)
+                if is_search_hash_secret_configured()
+                else None
             )
+            if saved:
+                display = resolve_stored_insurance_for_display(
+                    saved.get("normalized_payload") or saved.get("normalized_records"),
+                    saved.get("summary"),
+                    customer_name,
+                    raw_response=saved.get("raw_response"),
+                )
+                insured_summary = display.get("insured_summary") or {}
+                summary = display.get("insurance_summary") or summary
+                insurance_summary_debug = (insured_summary or {}).get("debug") or {}
+        else:
+            insurance_summary_debug = entry.get("insurance_summary_debug") or (
+                insured_summary.get("debug") or {}
+            )
+            inner = insured_summary.get("counts")
+            if isinstance(inner, dict):
+                summary = {
+                    "total": int(inner.get("product_count") or summary.get("total") or 0),
+                    "insured_valid": int(
+                        inner.get("active_product_count") or summary.get("insured_valid") or 0
+                    ),
+                    "company_count": int(
+                        inner.get("company_count") or summary.get("company_count") or 0
+                    ),
+                    "coverage_count": int(
+                        inner.get("coverage_count") or summary.get("coverage_count") or 0
+                    ),
+                }
+        company_groups = insured_summary.get("company_groups") or []
     user_message = entry.get("insurance_message") or entry.get("insurance_error")
     credit4u_debug: dict[str, Any] | None = None
     insurance_stage = str(entry.get("insurance_stage") or "")
@@ -2668,6 +2717,8 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
         "insurance_message": user_message,
         "insurance_error_code": entry.get("insurance_error_code"),
         "insurance_summary": summary,
+        "insured_summary": insured_summary,
+        "insurance_summary_debug": insurance_summary_debug,
         "insurance_records": records,
         "insurance_company_groups": company_groups,
         "show_existing_account_section": show_existing_account_section,
@@ -3700,27 +3751,116 @@ def hospital_insurance_request_retry(flow_id: str | None = None):
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
 
-@app.get("/hospital/analysis-ready", response_class=HTMLResponse)
-def hospital_analysis_ready_get(request: Request, flow_id: str | None = None):
-    """통합 결과확인 5단계 최소 스텁(추후 확장)."""
+def _prepare_integrated_flow_entry(flow_id: str, entry: dict[str, Any]) -> bool:
+    """통합·AI 단계용 FLOW_STORE 동기화(저장본 우선, CODEF 미호출)."""
+    entry["flow_id"] = flow_id
+    if entry.get("medical_status") != "completed":
+        _apply_saved_medical_records(flow_id, entry)
+    _restore_saved_insurance_records_if_needed(entry)
+    return (
+        entry.get("medical_status") == "completed"
+        and entry.get("insurance_status") == "completed"
+    )
+
+
+@app.post("/hospital/rebuild-insurance-summary")
+def hospital_rebuild_insurance_summary_post(
+    request: Request, flow_id: str | None = None
+):
+    """저장 원부로 insured_summary 재생성(CODEF 미호출)."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
-    if entry.get("medical_status") != "completed":
-        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
-    _restore_saved_insurance_records_if_needed(entry)
-    if entry.get("insurance_status") != "completed":
+    customer = entry.get("customer") or {}
+    if not is_search_hash_secret_configured():
+        return RedirectResponse(
+            f"/hospital/analysis-ready?flow_id={fid}", status_code=303
+        )
+    package = rebuild_insurance_summary_for_customer(customer)
+    if package:
+        saved = load_latest_insurance_records(customer)
+        if saved:
+            _apply_saved_insurance_records_to_entry(entry, saved)
+    return RedirectResponse(f"/hospital/analysis-ready?flow_id={fid}", status_code=303)
+
+
+@app.get("/hospital/analysis-ready", response_class=HTMLResponse)
+def hospital_analysis_ready_get(request: Request, flow_id: str | None = None):
+    """통합 결과확인 5단계 — 진료·보험 저장본 결합."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if not _prepare_integrated_flow_entry(fid, entry):
+        if entry.get("medical_status") != "completed":
+            return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    customer = entry.get("customer") or {}
+    ctx = build_analysis_ready_context(
+        entry,
+        fid,
+        debug=_debug_panel(),
+        restore_medical_fn=_apply_saved_medical_records,
+        restore_insurance_fn=_restore_saved_insurance_records_if_needed,
+    )
     return templates.TemplateResponse(
         request,
-        "analysis_ready_stub.html",
+        "analysis_ready.html",
         {
-            "current_step": 5,
-            "flow_id": fid,
-            "debug_panel": _debug_panel(),
+            **ctx,
+            "customer_display": _build_customer_display(customer),
         },
     )
+
+
+@app.get("/hospital/ai-analysis", response_class=HTMLResponse)
+def hospital_ai_analysis_get(request: Request, flow_id: str | None = None):
+    """AI 분석 6단계 — rule 기반 청구 후보(저장본 우선)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if not _prepare_integrated_flow_entry(fid, entry):
+        if entry.get("medical_status") != "completed":
+            return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    ctx = build_ai_analysis_context(
+        entry,
+        fid,
+        debug=_debug_panel(),
+        restore_medical_fn=_apply_saved_medical_records,
+        restore_insurance_fn=_restore_saved_insurance_records_if_needed,
+    )
+    return templates.TemplateResponse(
+        request,
+        "ai_analysis.html",
+        ctx,
+    )
+
+
+@app.post("/hospital/ai-analysis/start")
+def hospital_ai_analysis_start_post(request: Request, flow_id: str | None = None):
+    """rule 기반 AI 분석 실행(CODEF 미호출) → FLOW_STORE 저장."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if not _prepare_integrated_flow_entry(fid, entry):
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    try:
+        result = execute_ai_claim_analysis(
+            entry,
+            restore_medical_fn=_apply_saved_medical_records,
+            restore_insurance_fn=_restore_saved_insurance_records_if_needed,
+            use_openai=True,
+        )
+        if result.get("error") == "no_data":
+            entry["ai_analysis_message"] = result.get("message")
+    except Exception:
+        logger.exception("ai claim analysis failed flow_id=%s", fid)
+        entry["ai_analysis_message"] = "분석 중 오류가 발생했습니다. rule 결과로 다시 시도해 주세요."
+    return RedirectResponse(f"/hospital/ai-analysis?flow_id={fid}", status_code=303)
 
 
 @app.get("/operator", response_class=HTMLResponse)

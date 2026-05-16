@@ -98,6 +98,13 @@ def _product_name_from_record(record: dict[str, Any]) -> str:
     return _pick_text(record, *_PRODUCT_NAME_KEYS)
 
 
+def infer_company_name_from_product(product_name: str) -> dict[str, Any]:
+    """상품명 기반 보험회사명 추정(요약 모듈 위임)."""
+    from services.credit4u_contract_summary import infer_company_name_from_product as _infer
+
+    return _infer(product_name)
+
+
 def infer_insurance_company(record: dict[str, Any]) -> tuple[str, bool]:
     """보험회사명 반환 (company, company_inferred)."""
     if not isinstance(record, dict):
@@ -467,46 +474,75 @@ def flatten_imported_insurance_records(normalized_payload: Any) -> list[dict[str
     return records
 
 
+def compute_insured_summary_package(
+    raw_response: Any,
+    normalized_payload: Any,
+    customer_name: str,
+    *,
+    summary_payload: Any = None,
+) -> dict[str, Any]:
+    """원부 정규화 + 피보험자 기준 insured_summary(CODEF 미호출)."""
+    from services.credit4u_contract_summary import build_summary_json_package
+
+    preserve = summary_payload if isinstance(summary_payload, dict) else None
+    package = build_summary_json_package(
+        raw_response,
+        normalized_payload,
+        customer_name,
+        preserve_meta=preserve,
+    )
+    insured_summary = package.get("insured_summary")
+    if not isinstance(insured_summary, dict):
+        insured_summary = {}
+    counts = insured_summary.get("counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    flat_records = flatten_imported_insurance_records(normalized_payload)
+    return {
+        "summary_json": package,
+        "insured_summary": insured_summary,
+        "insurance_summary": {
+            "total": int(counts.get("product_count") or 0),
+            "insured_valid": int(counts.get("active_product_count") or 0),
+            "company_count": int(counts.get("company_count") or 0),
+            "coverage_count": int(counts.get("coverage_count") or 0),
+        },
+        "flat_record_count": len(flat_records),
+        "normalized_contract_counts": package.get("counts")
+        if isinstance(package.get("counts"), dict)
+        else {},
+    }
+
+
 def resolve_stored_insurance_for_display(
     normalized_payload: Any,
     summary_payload: Any,
     customer_name: str,
+    *,
+    raw_response: Any = None,
 ) -> dict[str, Any]:
-    """SQLite insurance_records 저장본 → completed 화면용 구조."""
-    flat_records = flatten_imported_insurance_records(normalized_payload)
-    normalized, company_groups = build_insurance_company_groups(flat_records, customer_name)
-    summary = insurance_summary_from_records(normalized)
-
-    if isinstance(summary_payload, dict):
-        imported_counts = summary_payload.get("counts")
-        insured_summary = summary_payload.get("insured_summary")
-        if isinstance(insured_summary, dict):
-            inner = insured_summary.get("counts")
-            if isinstance(inner, dict) and inner.get("insured_product_count") is not None:
-                summary = {
-                    "total": int(inner.get("insured_product_count") or summary["total"]),
-                    "insured_valid": int(
-                        inner.get("insured_active_product_count") or summary["insured_valid"]
-                    ),
-                    "company_count": int(
-                        inner.get("insured_company_count") or summary["company_count"]
-                    ),
-                }
-            elif isinstance(imported_counts, dict):
-                contract_total = sum(
-                    int(imported_counts.get(bucket) or 0)
-                    for bucket in _IMPORTED_CONTRACT_BUCKETS
-                )
-                if contract_total > 0:
-                    summary["total"] = contract_total
-
+    """SQLite insurance_records 저장본 → completed·통합 화면용 구조."""
+    raw = raw_response
+    if raw is None and isinstance(summary_payload, dict):
+        raw = summary_payload.get("raw_response")
+    package = compute_insured_summary_package(
+        raw,
+        normalized_payload,
+        customer_name,
+        summary_payload=summary_payload,
+    )
+    insured_summary = package["insured_summary"]
+    company_groups = insured_summary.get("company_groups")
+    if not isinstance(company_groups, list):
+        company_groups = []
     return {
-        "insurance_records": normalized,
-        "insurance_company_groups": prepare_insurance_company_groups_for_template(
-            company_groups
-        ),
-        "insurance_summary": summary,
-        "flat_record_count": len(flat_records),
+        "insurance_records": [],
+        "insured_summary": insured_summary,
+        "insurance_company_groups": company_groups,
+        "insurance_summary": package["insurance_summary"],
+        "summary_json": package["summary_json"],
+        "flat_record_count": package["flat_record_count"],
+        "normalized_contract_counts": package.get("normalized_contract_counts") or {},
     }
 
 

@@ -385,12 +385,12 @@
       <div class="hospital-insurance-summary-panel" aria-label="보험가입이력 요약">
         <ul class="hospital-insurance-summary-counts">
           <li class="hospital-insurance-summary-counts__item">
-            <span class="hospital-insurance-summary-counts__label">전체 보험가입이력</span>
+            <span class="hospital-insurance-summary-counts__label">피보험자 기준 상품</span>
             <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.total }}</strong>
             <span class="hospital-insurance-summary-counts__unit">건</span>
           </li>
           <li class="hospital-insurance-summary-counts__item">
-            <span class="hospital-insurance-summary-counts__label">피보험자 기준 유효 보험</span>
+            <span class="hospital-insurance-summary-counts__label">정상·유지 계약</span>
             <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.insured_valid }}</strong>
             <span class="hospital-insurance-summary-counts__unit">건</span>
           </li>
@@ -399,57 +399,86 @@
             <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.company_count }}</strong>
             <span class="hospital-insurance-summary-counts__unit">개</span>
           </li>
+          <li class="hospital-insurance-summary-counts__item">
+            <span class="hospital-insurance-summary-counts__label">총 보장</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.coverage_count or 0 }}</strong>
+            <span class="hospital-insurance-summary-counts__unit">건</span>
+          </li>
         </ul>
       </div>
 
-      {% if insurance_company_groups %}
+      {% if insured_summary and insured_summary.company_groups %}
       <div class="hospital-insurance-companies" aria-label="보험회사별 가입이력">
-        {% for group in insurance_company_groups %}
+        {% for group in insured_summary.company_groups %}
         <article class="hospital-insurance-company-card">
           <header class="hospital-insurance-company-card__header">
-            <h3 class="hospital-insurance-company-card__title">{{ group.company or group.company_name }}</h3>
+            <h3 class="hospital-insurance-company-card__title">{{ group.company_name }}</h3>
             <p class="hospital-insurance-company-card__meta">
-              보험 <strong>{{ group.count or group.total_count }}</strong>건 ·
-              청구검토 포함 <strong>{{ group.claim_review_count or group.include_count }}</strong>건
+              상품 <strong>{{ group.contract_count }}</strong>건 ·
+              정상/유지 <strong>{{ group.active_contract_count }}</strong>건
             </p>
           </header>
-          {% set products = group.products or group.items or [] %}
+          {% set products = group.products or [] %}
           {% if products %}
           <ul class="hospital-insurance-product-list">
             {% for product in products %}
-            <li class="hospital-insurance-product{% if not product.include_for_claim_review %} hospital-insurance-product--excluded{% endif %}">
+            <li class="hospital-insurance-product">
               <div class="hospital-insurance-product__main">
-                <p class="hospital-insurance-product__name">{{ product.product_name }}</p>
+                <p class="hospital-insurance-product__name">{{ product.insurance_name }}</p>
                 <dl class="hospital-insurance-product__facts">
                   <div class="hospital-insurance-product__fact">
+                    <dt>보험회사</dt>
+                    <dd>{{ product.company_name or group.company_name or '—' }}</dd>
+                  </div>
+                  <div class="hospital-insurance-product__fact">
+                    <dt>상태</dt>
+                    <dd>{{ product.contract_status or '—' }}</dd>
+                  </div>
+                  <div class="hospital-insurance-product__fact">
                     <dt>증권번호</dt>
-                    <dd>{{ product.policy_no }}</dd>
+                    <dd>{{ product.policy_number_hid or product.policy_number or '—' }}</dd>
                   </div>
                   <div class="hospital-insurance-product__fact">
-                    <dt>계약상태</dt>
-                    <dd>{{ product.status }}</dd>
+                    <dt>출처</dt>
+                    <dd>{{ product.source_type_label or product.source_type or '—' }}</dd>
                   </div>
                   <div class="hospital-insurance-product__fact">
-                    <dt>역할</dt>
-                    <dd>{{ product.role }}</dd>
-                  </div>
-                  <div class="hospital-insurance-product__fact">
-                    <dt>상품분류</dt>
-                    <dd>{{ product.category }}</dd>
+                    <dt>보장 수</dt>
+                    <dd>{{ product.coverage_count }}건</dd>
                   </div>
                 </dl>
-                {% if product.company_inferred %}
-                <p class="hospital-insurance-product__inferred">회사명 추정</p>
-                {% endif %}
               </div>
+              {% if product.coverages %}
+              <details class="coverage-details hospital-insurance-product__coverages">
+                <summary>보장내역 보기 ({{ product.coverage_count }}건)</summary>
+                <div class="coverage-list table-wrap">
+                  <table class="data-table coverage-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">보장구분</th>
+                        <th scope="col">보장명</th>
+                        <th scope="col">금액</th>
+                        <th scope="col">상태</th>
+                        <th scope="col">기간</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for cov in product.coverages %}
+                      <tr>
+                        <td>{{ cov.agreement_type or '—' }}</td>
+                        <td>{{ cov.coverage_name or '—' }}</td>
+                        <td>{{ cov.amount_display or '—' }}</td>
+                        <td>{{ cov.status or '—' }}</td>
+                        <td>{{ cov.period_display or '—' }}</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+              {% endif %}
               <div class="hospital-insurance-product__badge">
-                {% if product.include_for_claim_review and product.role == "피보험자" and product.is_active_status %}
-                <span class="hospital-insurance-badge hospital-insurance-badge--include">청구검토 포함</span>
-                {% elif product.role == "계약자" or product.role == "수익자" %}
-                <span class="hospital-insurance-badge hospital-insurance-badge--ref">참고/제외</span>
-                {% else %}
-                <span class="hospital-insurance-badge hospital-insurance-badge--exclude">제외</span>
-                {% endif %}
+                <span class="hospital-insurance-badge hospital-insurance-badge--include">피보험자 기준</span>
               </div>
             </li>
             {% endfor %}
@@ -460,6 +489,23 @@
         </article>
         {% endfor %}
       </div>
+      {% endif %}
+
+      {% if debug_panel and insurance_summary_debug %}
+      <aside class="hospital-insurance-debug" aria-label="보험 요약 디버그">
+        <h3 class="hospital-insurance-debug__title">보험 필터 DEBUG</h3>
+        <dl class="hospital-insurance-debug__dl">
+          <div class="hospital-insurance-debug__row"><dt>original_contract_total</dt><dd>{{ insurance_summary_debug.original_contract_total }}</dd></div>
+          <div class="hospital-insurance-debug__row"><dt>excluded_as_other_insured_count</dt><dd>{{ insurance_summary_debug.excluded_as_other_insured_count }}</dd></div>
+          <div class="hospital-insurance-debug__row"><dt>unknown_insured_contract_count</dt><dd>{{ insurance_summary_debug.unknown_insured_contract_count }}</dd></div>
+          <div class="hospital-insurance-debug__row"><dt>payment_estimated_count</dt><dd>{{ insurance_summary_debug.payment_estimated_count }}</dd></div>
+          <div class="hospital-insurance-debug__row"><dt>company_inferred_count</dt><dd>{{ insurance_summary_debug.company_inferred_count }}</dd></div>
+          <div class="hospital-insurance-debug__row"><dt>company_unknown_count</dt><dd>{{ insurance_summary_debug.company_unknown_count }}</dd></div>
+          {% if insurance_summary_debug.company_matched_keyword_counts %}
+          <div class="hospital-insurance-debug__row"><dt>company_matched_keyword_counts</dt><dd>{{ insurance_summary_debug.company_matched_keyword_counts }}</dd></div>
+          {% endif %}
+        </dl>
+      </aside>
       {% endif %}
       </div>
 

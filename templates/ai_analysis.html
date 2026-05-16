@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI 분석 · 래드리본 병원용</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-insurance-page analysis-page ai-analysis-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      {% if debug_panel %}
+      <span class="hospital-start-header__debug"><a href="/debug/flows" class="hospital-start-header__debug-link">디버그</a></span>
+      {% endif %}
+      <a class="hospital-start-header__back" href="/">서비스 선택</a>
+    </div>
+  </header>
+
+  <main class="analysis-main ai-analysis-main">
+    {% include "partials/step_bar.html" %}
+
+    <section class="analysis-section analysis-hero" aria-labelledby="ai-analysis-title">
+      <h1 id="ai-analysis-title" class="analysis-title">6단계 · AI 분석</h1>
+      <p class="analysis-lead">진료내역과 보험가입이력 요약을 바탕으로 <strong>청구 검토 후보</strong>를 분류합니다. 보험금 지급을 확정하지 않습니다.</p>
+      {% if input_summary %}
+      <p class="analysis-note">입력 기준: 진료 {{ input_summary.medical_count }}건 · 보험 상품 {{ input_summary.insurance_product_count }}건</p>
+      {% endif %}
+    </section>
+
+    {% if not has_data %}
+    <section class="analysis-section">
+      <p class="analysis-empty">{{ no_data_message or '저장된 진료내역 또는 보험가입이력이 없습니다.' }}</p>
+      <nav class="analysis-nav">
+        <a class="btn btn--ghost" href="/hospital/analysis-ready?flow_id={{ flow_id }}">5단계로 이동</a>
+      </nav>
+    </section>
+    {% elif not has_analysis %}
+    <section class="analysis-section ai-start-panel">
+      <p class="analysis-lead">저장된 데이터를 rule 엔진으로 분석합니다. (CODEF 호출 없음)</p>
+      <form method="post" action="/hospital/ai-analysis/start?flow_id={{ flow_id }}">
+        <button type="submit" class="btn btn--primary">AI 분석 시작</button>
+      </form>
+    </section>
+    {% else %}
+    {% set ai = ai_analysis_result %}
+    {% set totals = ai.totals %}
+
+    <section class="analysis-section ai-result-meta" aria-label="분석 정보">
+      <ul class="analysis-meta-list">
+        <li><span>분석 시각</span> {{ ai.analysis_time }}</li>
+        <li><span>엔진</span> {{ ai.engine }}</li>
+        {% if ai.fallback_reason %}
+        <li><span>보강</span> {{ ai.fallback_reason }}</li>
+        {% endif %}
+        <li><span>입력</span> 진료 {{ ai.input_summary.medical_count }}건 · 상품 {{ ai.input_summary.insurance_product_count }}건</li>
+        <li><span>실손성 상품</span> {{ (ai.detected_actual_loss_products or [])|length }}건</li>
+      </ul>
+    </section>
+
+    <section class="analysis-section ai-summary-grid" aria-label="요약">
+      <article class="ai-summary-card ai-summary-card--primary">
+        <h2 class="ai-summary-card__label">청구 검토 가능액(합산·추정)</h2>
+        <p class="ai-summary-card__value">{{ totals.total_estimated_display }}</p>
+      </article>
+      <article class="ai-summary-card">
+        <h2 class="ai-summary-card__label">총 후보 건수</h2>
+        <p class="ai-summary-card__value">{{ totals.total_candidate_count }}건</p>
+      </article>
+      <article class="ai-summary-card">
+        <h2 class="ai-summary-card__label">청구 가능성 높음</h2>
+        <p class="ai-summary-card__value">{{ totals.high_count }}건</p>
+      </article>
+      <article class="ai-summary-card">
+        <h2 class="ai-summary-card__label">검토 필요</h2>
+        <p class="ai-summary-card__value">{{ totals.review_count }}건</p>
+      </article>
+    </section>
+
+    <section class="analysis-section" aria-label="카테고리별 후보">
+      <div class="ai-category-tabs" role="tablist" aria-label="후보 분류">
+        {% for tab in ai.category_tabs %}
+        <button
+          type="button"
+          class="ai-category-tab{% if tab.id == default_category %} active{% endif %}"
+          role="tab"
+          data-category-tab="{{ tab.id }}"
+          aria-selected="{% if tab.id == default_category %}true{% else %}false{% endif %}"
+        >
+          {{ tab.label }} {{ tab.count }}건 · {{ tab.amount_display }}
+        </button>
+        {% endfor %}
+      </div>
+
+      {% for tab in ai.category_tabs %}
+      <div
+        class="ai-category-panel{% if tab.id == default_category %} active{% endif %}"
+        data-category-panel="{{ tab.id }}"
+        role="tabpanel"
+        {% if tab.id != default_category %}hidden{% endif %}
+      >
+        {% set items = ai.categories[tab.id] %}
+        {% if items %}
+        <div class="ai-candidate-list">
+          {% for item in items %}
+          <article class="ai-candidate-card">
+            <header class="ai-candidate-head">
+              <div class="ai-candidate-head__main">
+                <p class="ai-candidate-head__date">{{ item.date }}</p>
+                <h3 class="ai-candidate-head__title">{{ item.hospital_name }}</h3>
+                <p class="ai-candidate-head__sub">{{ item.diagnosis_name }}{% if item.department and item.department != '—' %} · {{ item.department }}{% endif %}</p>
+              </div>
+              <p class="ai-candidate-amount">{{ item.amount_label }}</p>
+            </header>
+            <details class="ai-candidate-detail">
+              <summary>자세히 보기</summary>
+              <div class="ai-detail-box">
+                <h4 class="ai-detail-box__title">판단 사유</h4>
+                <p>{{ item.reason }}</p>
+                <h4 class="ai-detail-box__title">다음 조치</h4>
+                <p>{{ item.next_action }}</p>
+                {% if item.required_documents %}
+                <h4 class="ai-detail-box__title">필요 서류(추정)</h4>
+                <ul>
+                  {% for doc in item.required_documents %}
+                  <li>{{ doc }}</li>
+                  {% endfor %}
+                </ul>
+                {% endif %}
+                {% if item.related_insurance %}
+                <h4 class="ai-detail-box__title">관련 보험</h4>
+                <ul class="related-insurance-list">
+                  {% for ins in item.related_insurance %}
+                  <li>
+                    <strong>{{ ins.company_name }}</strong>
+                    · {{ ins.insurance_name }}
+                    · {{ ins.policy_number_hid }}
+                    · {{ ins.contract_status }}
+                    {% if ins.matched_coverage %}<br /><span class="ai-detail-muted">담보: {{ ins.matched_coverage }}</span>{% endif %}
+                  </li>
+                  {% endfor %}
+                </ul>
+                {% endif %}
+                {% if item.related_medical %}
+                <h4 class="ai-detail-box__title">관련 진료</h4>
+                <ul class="related-medical-list">
+                  {% for med in item.related_medical %}
+                  <li>{{ med.visit_date }} · {{ med.hospital_name }} · {{ med.diagnosis }} · {{ med.copay_display }}</li>
+                  {% endfor %}
+                </ul>
+                {% endif %}
+              </div>
+            </details>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="analysis-empty">해당 분류의 청구 검토 후보가 없습니다.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <nav class="analysis-nav" aria-label="단계 이동">
+      <a class="btn btn--ghost" href="/hospital/analysis-ready?flow_id={{ flow_id }}">5단계 통합 결과확인</a>
+      {% if has_data and has_analysis %}
+      <form class="analysis-nav__form" method="post" action="/hospital/ai-analysis/start?flow_id={{ flow_id }}">
+        <button type="submit" class="btn btn--ghost">분석 다시 실행</button>
+      </form>
+      {% endif %}
+      <a class="btn btn--ghost" href="/hospital/start">처음으로</a>
+    </nav>
+
+    {% if debug_panel and analysis_debug %}
+    <aside class="hospital-insurance-debug analysis-debug" aria-label="디버그">
+      <h2 class="hospital-insurance-debug__title">DEBUG</h2>
+      <dl class="hospital-insurance-debug__dl">
+        <div class="hospital-insurance-debug__row"><dt>loaded_medical_record_id</dt><dd>{{ analysis_debug.loaded_medical_record_id }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>loaded_insurance_record_id</dt><dd>{{ analysis_debug.loaded_insurance_record_id }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>ai_candidate_count</dt><dd>{{ analysis_debug.ai_candidate_count }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>ai_total_estimated_amount</dt><dd>{{ analysis_debug.ai_total_estimated_amount }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>detected_actual_loss_count</dt><dd>{{ analysis_debug.detected_actual_loss_count }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>fallback_reason</dt><dd>{{ analysis_debug.fallback_reason }}</dd></div>
+      </dl>
+    </aside>
+    {% endif %}
+  </main>
+
+  <footer class="hospital-start-footer">
+    <p>본 화면은 청구 검토 후보 추정이며, 최종 청구 가능 여부는 약관·서류·보험사 심사 결과에 따릅니다.</p>
+  </footer>
+  <script src="/static/ai_analysis.js"></script>
+</body>
+</html>

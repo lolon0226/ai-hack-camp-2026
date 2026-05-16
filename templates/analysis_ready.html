@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>통합 결과확인 · 래드리본 병원용</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-insurance-page analysis-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      {% if debug_panel %}
+      <span class="hospital-start-header__debug"><a href="/debug/flows" class="hospital-start-header__debug-link">디버그</a></span>
+      {% endif %}
+      <a class="hospital-start-header__back" href="/">서비스 선택</a>
+    </div>
+  </header>
+
+  <main class="analysis-main">
+    {% include "partials/step_bar.html" %}
+
+    <section class="analysis-section analysis-hero" aria-labelledby="analysis-ready-title">
+      <h1 id="analysis-ready-title" class="analysis-title">통합 결과확인</h1>
+      <p class="analysis-lead">진료내역과 신용정보원 보험가입이력을 결합해 청구 검토 준비 상태를 확인합니다.</p>
+      {% if insurance_source_note %}
+      <p class="analysis-note">{{ insurance_source_note }}</p>
+      {% endif %}
+    </section>
+
+    <section class="analysis-section analysis-summary-grid" aria-label="진료내역 요약">
+      <article class="analysis-card">
+        <h2 class="analysis-card__title">진료내역</h2>
+        <ul class="analysis-stat-list">
+          <li><span>기본</span><strong>{{ medical_counts.basic }}</strong>건</li>
+          <li><span>세부</span><strong>{{ medical_counts.detail }}</strong>건</li>
+          <li><span>처방</span><strong>{{ medical_counts.prescribe }}</strong>건</li>
+        </ul>
+        <div class="analysis-card__actions">
+          <a class="btn btn--ghost" href="/hospital/hira-start?flow_id={{ flow_id }}">진료내역 확인하기</a>
+          <a class="btn btn--ghost" href="/hospital/hira-start?flow_id={{ flow_id }}#hira-full-results">진료내역 전체 페이지로 보기</a>
+        </div>
+      </article>
+
+      <article class="analysis-card">
+        <h2 class="analysis-card__title">신용정보원 보험가입이력</h2>
+        <p class="analysis-card__subtitle">출처: {{ insurance_overview.source_label }}</p>
+        <p class="analysis-card__hint">피보험자인 보장만 모아 표시합니다. 계약자·타인 피보험자 계약은 목록에서 제외됩니다.</p>
+        <ul class="analysis-stat-list">
+          <li><span>보험회사</span><strong>{{ insurance_overview.company_count }}</strong>개</li>
+          <li><span>상품</span><strong>{{ insurance_overview.product_count }}</strong>건</li>
+          <li><span>정상 계약</span><strong>{{ insurance_overview.active_contract_count }}</strong>건</li>
+          <li><span>총 보장</span><strong>{{ insurance_overview.coverage_count }}</strong>건</li>
+        </ul>
+        <div class="analysis-card__actions">
+          <a class="btn btn--ghost" href="/hospital/insurance-request?flow_id={{ flow_id }}">보험가입이력 단계로 이동</a>
+          <form class="analysis-rebuild-form" method="post" action="/hospital/rebuild-insurance-summary?flow_id={{ flow_id }}">
+            <button type="submit" class="btn btn--ghost">저장된 원부 재정리</button>
+          </form>
+        </div>
+      </article>
+    </section>
+
+    {% if insured_summary and insured_summary.company_groups %}
+    <section class="analysis-section" aria-label="회사별 보험가입이력">
+      <h2 class="analysis-section__title">회사별 보험가입이력</h2>
+      <div class="insurance-company-list">
+        {% for group in insured_summary.company_groups %}
+        <article class="insurance-company-card">
+          <header class="insurance-company-card__header">
+            <h3 class="insurance-company-card__name">{{ group.company_name }}</h3>
+            <p class="insurance-company-card__meta">
+              상품 <strong>{{ group.contract_count }}</strong>건 ·
+              정상/유지 <strong>{{ group.active_contract_count }}</strong>건
+              {% if group.phone_no_display %}
+              · <a href="tel:{{ group.phone_no }}">{{ group.phone_no_display }}</a>
+              {% endif %}
+            </p>
+          </header>
+          <div class="insurance-product-list">
+            {% for product in group.products %}
+            <article class="insurance-product-card">
+              <div class="insurance-product-card__head">
+                <h4 class="insurance-product-card__title">{{ product.insurance_name }}</h4>
+                <span class="insurance-product-card__status{% if product.contract_status and ('정상' in product.contract_status or '유지' in product.contract_status) %} insurance-product-card__status--active{% endif %}">{{ product.contract_status or '—' }}</span>
+              </div>
+              <dl class="insurance-product-card__facts">
+                <div><dt>보험회사</dt><dd>{{ product.company_name or group.company_name or '—' }}</dd></div>
+                <div><dt>상품명</dt><dd>{{ product.insurance_name or '—' }}</dd></div>
+                <div><dt>상태</dt><dd>{{ product.contract_status or '—' }}</dd></div>
+                <div><dt>증권번호</dt><dd>{{ product.policy_number_hid or product.policy_number or '—' }}</dd></div>
+                <div><dt>출처</dt><dd>{{ product.source_type_label or product.source_type or '—' }}</dd></div>
+                <div><dt>보험기간</dt>
+                  <dd>
+                    {% if product.start_date and product.start_date|length >= 8 %}
+                    {{ product.start_date[0:4] }}.{{ product.start_date[4:6] }}.{{ product.start_date[6:8] }}
+                    {% if product.end_date and product.end_date|length >= 8 %}
+                     ~ {{ product.end_date[0:4] }}.{{ product.end_date[4:6] }}.{{ product.end_date[6:8] }}
+                    {% endif %}
+                    {% else %}—{% endif %}
+                  </dd>
+                </div>
+                <div><dt>보험료</dt><dd>{{ product.premium or '—' }}</dd></div>
+                <div><dt>보장 수</dt><dd>{{ product.coverage_count }}건</dd></div>
+              </dl>
+              {% if product.coverages %}
+              <details class="coverage-details insurance-product-card__coverages">
+                <summary>보장내역 보기{% if product.coverage_count %} (총 {{ product.coverage_count }}건){% endif %}</summary>
+                <div class="coverage-list table-wrap">
+                  <table class="data-table coverage-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">보장구분</th>
+                        <th scope="col">보장명</th>
+                        <th scope="col">보장금액</th>
+                        <th scope="col">상태</th>
+                        <th scope="col">보장기간</th>
+                        <th scope="col">코드</th>
+                        <th scope="col">피보험자</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for cov in product.coverages %}
+                      <tr>
+                        <td>{{ cov.agreement_type or '—' }}</td>
+                        <td>{{ cov.coverage_name or '—' }}</td>
+                        <td>{{ cov.amount_display or '—' }}</td>
+                        <td>{{ cov.status or '—' }}</td>
+                        <td>{{ cov.period_display or '—' }}</td>
+                        <td>{{ cov.code or '—' }}</td>
+                        <td>{{ cov.insured_person or '—' }}</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+              {% endif %}
+            </article>
+            {% endfor %}
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <nav class="analysis-nav" aria-label="단계 이동">
+      <a class="btn btn--primary" href="/hospital/ai-analysis?flow_id={{ flow_id }}">6단계 AI 분석으로 이동</a>
+      <a class="btn btn--ghost" href="/hospital/insurance-request?flow_id={{ flow_id }}">이전 단계</a>
+      <a class="btn btn--ghost" href="/hospital/start">처음으로</a>
+    </nav>
+
+    {% if debug_panel and analysis_debug %}
+    <aside class="hospital-insurance-debug analysis-debug" aria-label="디버그">
+      <h2 class="hospital-insurance-debug__title">DEBUG</h2>
+      <dl class="hospital-insurance-debug__dl">
+        <div class="hospital-insurance-debug__row"><dt>loaded_medical_record_id</dt><dd>{{ analysis_debug.loaded_medical_record_id }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>loaded_insurance_record_id</dt><dd>{{ analysis_debug.loaded_insurance_record_id }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>insurance_record_source</dt><dd>{{ analysis_debug.insurance_record_source }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>original_contract_total</dt><dd>{{ analysis_debug.original_contract_total }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>excluded_as_other_insured_count</dt><dd>{{ analysis_debug.excluded_as_other_insured_count }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>unknown_insured_contract_count</dt><dd>{{ analysis_debug.unknown_insured_contract_count }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>payment_estimated_count</dt><dd>{{ analysis_debug.payment_estimated_count }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>deduped_product_count</dt><dd>{{ analysis_debug.deduped_product_count }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>company_inferred_count</dt><dd>{{ analysis_debug.company_inferred_count }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>company_unknown_count</dt><dd>{{ analysis_debug.company_unknown_count }}</dd></div>
+        {% if analysis_debug.company_matched_keyword_counts %}
+        <div class="hospital-insurance-debug__row"><dt>company_matched_keyword_counts</dt><dd>{{ analysis_debug.company_matched_keyword_counts }}</dd></div>
+        {% endif %}
+      </dl>
+    </aside>
+    {% endif %}
+  </main>
+
+  <footer class="hospital-start-footer">
+    <p>본 화면은 저장된 진료·보험 데이터를 기반으로 하며, 보험금 지급을 확정하지 않습니다.</p>
+  </footer>
+</body>
+</html>

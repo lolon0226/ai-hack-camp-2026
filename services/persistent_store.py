@@ -332,14 +332,20 @@ def save_medical_records(
 
 
 def _row_to_medical_bundle(row: tuple[Any, ...]) -> dict[str, Any]:
+    offset = 0
+    record_id: int | None = None
+    if len(row) >= 8:
+        record_id = int(row[0])
+        offset = 1
     return {
-        "flow_id": row[0],
-        "basic": json.loads(row[1] or "[]"),
-        "detail": json.loads(row[2] or "[]"),
-        "prescribe": json.loads(row[3] or "[]"),
-        "counts": json.loads(row[4] or "{}"),
-        "source": row[5],
-        "created_at": row[6],
+        "record_id": record_id,
+        "flow_id": row[offset + 0],
+        "basic": json.loads(row[offset + 1] or "[]"),
+        "detail": json.loads(row[offset + 2] or "[]"),
+        "prescribe": json.loads(row[offset + 3] or "[]"),
+        "counts": json.loads(row[offset + 4] or "{}"),
+        "source": row[offset + 5],
+        "created_at": row[offset + 6],
     }
 
 
@@ -354,7 +360,7 @@ def load_latest_medical_records(customer: dict[str, Any]) -> dict[str, Any] | No
     try:
         row = conn.execute(
             """
-            SELECT flow_id, basic_json, detail_json, prescribe_json, counts_json, source, created_at
+            SELECT id, flow_id, basic_json, detail_json, prescribe_json, counts_json, source, created_at
             FROM medical_records
             WHERE customer_key = ?
             ORDER BY created_at DESC, id DESC
@@ -690,6 +696,49 @@ def load_latest_insurance_records(customer: dict[str, Any]) -> dict[str, Any] | 
         **loaded,
         "normalized_records": normalized_payload,
     }
+
+
+def update_insurance_record_summary(record_id: int, summary_json: dict[str, Any]) -> bool:
+    """insurance_records.summary_json 갱신(CODEF 미호출)."""
+    if not record_id:
+        return False
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "UPDATE insurance_records SET summary_json = ? WHERE id = ?",
+            (json.dumps(summary_json, ensure_ascii=False), int(record_id)),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def rebuild_insurance_summary_for_customer(customer: dict[str, Any]) -> dict[str, Any] | None:
+    """저장 원부로 insured_summary 재생성 후 summary_json 저장."""
+    saved = load_latest_insurance_records(customer)
+    if not saved:
+        return None
+    from services.insurance_summary import compute_insured_summary_package
+
+    customer_name = str(customer.get("name") or "")
+    package = compute_insured_summary_package(
+        saved.get("raw_response"),
+        saved.get("normalized_payload") or saved.get("normalized_records"),
+        customer_name,
+        summary_payload=saved.get("summary"),
+    )
+    summary_json = package.get("summary_json")
+    if not isinstance(summary_json, dict):
+        return None
+    update_insurance_record_summary(int(saved["record_id"]), summary_json)
+    logger.info(
+        "insurance summary rebuilt record_id=%s products=%s",
+        saved.get("record_id"),
+        (package.get("insured_summary") or {}).get("counts", {}).get("product_count"),
+    )
+    return package
 
 
 def init_storage() -> None:
