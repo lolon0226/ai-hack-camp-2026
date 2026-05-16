@@ -93,6 +93,9 @@
       {% elif insurance_status == "pending" and hide_insurance_codf_start %}
       <p class="hospital-insurance-state__lead">저장된 보험가입이력 사용 중</p>
       <p class="hospital-insurance-state__desc">이 고객은 DB에 저장된 보험가입이력 원부가 있습니다. 화면을 새로고침하면 자동으로 완료 상태로 표시됩니다.</p>
+      {% if show_insurance_contract_retry %}
+      {% include "partials/insurance_contract_retry.html" %}
+      {% endif %}
 
       {% elif insurance_status == "in_progress" %}
       {% if insurance_stage == "secure_no_required" %}
@@ -323,9 +326,9 @@
       {% elif insurance_stage == "register_completed" %}
       <h2 class="hospital-insurance-state__lead">신용정보원 회원가입 완료</h2>
       <p class="hospital-insurance-state__desc">{{ insurance_message or "회원가입이 완료되었습니다. 보험가입이력을 자동 조회하고 있습니다." }}</p>
-      <form class="hospital-insurance-state__form hospital-insurance-state__form--secondary" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}" data-loading-message="신용정보원 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요.">
-        <button type="submit" class="btn btn--ghost hospital-insurance-state__btn">보험가입이력 다시 조회 (보조)</button>
-      </form>
+      {% if show_insurance_contract_retry %}
+      {% include "partials/insurance_contract_retry.html" %}
+      {% endif %}
 
       {% elif insurance_stage == "register_continue_pending" %}
       <div class="hospital-insurance-progress" aria-busy="true">
@@ -371,7 +374,7 @@
       <p class="hospital-insurance-state__hint">상용 모드에서는 외부 API 조회 결과가 반영된 후에만 완료됩니다.</p>
       {% endif %}
       {% if insurance_stage not in ["secure_no_required", "register_required", "register_requesting", "register_secure_no_submitting", "register_secure_no_required", "register_sms_submitting", "register_sms_required", "register_signup_info_submitting", "register_signup_info_required", "register_signup_auto_retrying", "register_email_auth_submitting", "register_email_auth_required", "register_continue_pending", "register_retryable_timeout", "register_completed", "register_completed_but_contract_retry_needed", "already_registered", "email_required", "requesting_contract_info", "submitting_secure_no"] %}
-      <form class="hospital-insurance-state__form hospital-insurance-state__form--secondary" method="post" action="/hospital/insurance-request/retry?flow_id={{ flow_id }}">
+      <form class="hospital-insurance-state__form hospital-insurance-state__form--secondary" method="post" action="/hospital/insurance-request/cancel?flow_id={{ flow_id }}">
         <button type="submit" class="btn btn--ghost hospital-insurance-state__btn">조회 취소</button>
       </form>
       {% endif %}
@@ -457,6 +460,9 @@
       <p class="hospital-insurance-state__next">
         <a class="btn btn--primary hospital-insurance-state__btn" href="/hospital/analysis-ready?flow_id={{ flow_id }}">통합 결과확인으로 이동</a>
       </p>
+      {% if show_insurance_contract_retry %}
+      {% include "partials/insurance_contract_retry.html" %}
+      {% endif %}
 
       {% elif insurance_status == "failed" %}
       <p class="hospital-insurance-state__lead hospital-insurance-state__lead--error">보험가입이력 조회에 실패했습니다.</p>
@@ -476,10 +482,8 @@
         <input class="hospital-insurance-existing__input" id="credit4u-existing-password-failed" name="existing_password" type="password" autocomplete="current-password" required />
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">기존 계정으로 보험가입이력 조회</button>
       </form>
-      {% else %}
-      <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/retry?flow_id={{ flow_id }}">
-        <button type="submit" class="btn btn--ghost hospital-insurance-state__btn">다시 시도</button>
-      </form>
+      {% elif show_insurance_contract_retry %}
+      {% include "partials/insurance_contract_retry.html" %}
       {% endif %}
 
       {% else %}

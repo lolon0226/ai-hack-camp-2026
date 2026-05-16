@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import zipfile
@@ -19,10 +20,21 @@ ISS_PATH = INSTALLER_SRC / "setup.iss"
 
 DEMO_OUTPUT_SUBDIRS = ("incoming", "uploading", "uploaded", "failed", "logs")
 
-ISCC_CANDIDATES = (
+ISCC_CANDIDATES_SYSTEM = (
     Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
     Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
 )
+
+
+def iscc_candidate_paths() -> tuple[Path, ...]:
+    """ISCC.exe 탐색 경로(시스템 Program Files + 사용자 LOCALAPPDATA)."""
+    candidates: list[Path] = list(ISCC_CANDIDATES_SYSTEM)
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        candidates.append(
+            Path(local_app_data) / "Programs" / "Inno Setup 6" / "ISCC.exe"
+        )
+    return tuple(candidates)
 
 INSTALLER_SCRIPT_FILES = (
     "install_redribbon_demo.ps1",
@@ -109,7 +121,7 @@ def build_zip() -> Path:
 
 
 def find_iscc() -> Path | None:
-    for candidate in ISCC_CANDIDATES:
+    for candidate in iscc_candidate_paths():
         if candidate.is_file():
             return candidate
     which = shutil.which("ISCC")

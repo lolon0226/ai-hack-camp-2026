@@ -33,6 +33,10 @@
       {% include "partials/virtual_printer_demo_guide.html" %}
     </section>
 
+    {% if flash %}
+    <p class="operator-flash operator-flash--{{ flash.level }}" role="status">{{ flash.text }}</p>
+    {% endif %}
+
     {% if documents %}
     <section class="operator-section">
       <div class="operator-table-wrap">
@@ -54,7 +58,12 @@
           <tbody>
             {% for doc in documents %}
             <tr>
-              <td>{{ doc.document_title }}</td>
+              <td>
+                {{ doc.document_title }}
+                {% if doc.has_duplicate_upload %}
+                <span class="operator-pill operator-pill--duplicate" title="동일 SHA256 재업로드">{{ doc.duplicate_upload_display }}</span>
+                {% endif %}
+              </td>
               <td>{{ doc.hospital_name_display }}</td>
               <td>
                 {% if doc.customer_key and doc.customer_link_linked %}
@@ -63,8 +72,34 @@
                 {{ doc.customer_link_label }}
                 {% endif %}
               </td>
-              <td><span class="operator-pill operator-pill--{{ doc.ocr_status }}">{{ doc.ocr_status }}</span></td>
-              <td>{{ doc.document_type_candidate }}</td>
+              <td class="operator-ocr-cell">
+                <span class="operator-pill operator-pill--{{ doc.ocr_status }}">{{ doc.ocr_status_display }}</span>
+                {% if doc.ocr_error_display %}
+                <span class="operator-ocr-error" title="OCR 오류">{{ doc.ocr_error_display }}</span>
+                {% endif %}
+                {% if doc.ocr_debug_display %}
+                <span class="operator-ocr-debug" title="OCR 디버그">{{ doc.ocr_debug_display }}</span>
+                {% endif %}
+                {% if doc.ocr_preview_display %}
+                <details class="operator-ocr-preview">
+                  <summary>텍스트 미리보기 (1000자, 민감정보 마스킹)</summary>
+                  <pre class="operator-ocr-preview__body">{{ doc.ocr_preview_display }}</pre>
+                </details>
+                {% endif %}
+                <div class="operator-ocr-actions">
+                  {% if doc.ocr_can_retry %}
+                  <form class="operator-ocr-run-form" method="post" action="/operator/received-documents/{{ doc.id }}/ocr">
+                    <button type="submit" class="btn btn--ghost btn--xs">빠른 OCR</button>
+                  </form>
+                  {% endif %}
+                  {% if doc.ocr_can_strong %}
+                  <form class="operator-ocr-run-form" method="post" action="/operator/received-documents/{{ doc.id }}/ocr-strong">
+                    <button type="submit" class="btn btn--ghost btn--xs">강한 OCR 재실행</button>
+                  </form>
+                  {% endif %}
+                </div>
+              </td>
+              <td>{{ doc.document_type_display }}</td>
               <td>{{ doc.visit_dates_display }}</td>
               <td>{{ doc.amounts_display }}</td>
               <td>{{ doc.match_basis_display }}</td>

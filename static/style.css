@@ -3404,6 +3404,103 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   color: #b45309;
 }
 
+.operator-pill--failed {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.operator-pill--completed_partial {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.operator-ocr-cell {
+  max-width: 14rem;
+  vertical-align: top;
+}
+
+.operator-ocr-debug {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.68rem;
+  color: #6b7280;
+  word-break: break-all;
+}
+
+.operator-ocr-preview {
+  margin-top: 0.35rem;
+  font-size: 0.72rem;
+}
+
+.operator-ocr-preview summary {
+  cursor: pointer;
+  color: #2563eb;
+}
+
+.operator-ocr-preview__body {
+  margin: 0.35rem 0 0;
+  padding: 0.4rem;
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.68rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.operator-pill--duplicate {
+  background: #eff6ff;
+  color: #1d4ed8;
+  margin-left: 0.35rem;
+}
+
+.operator-ocr-error {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.7rem;
+  color: #b91c1c;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-ocr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+
+.operator-ocr-run-form {
+  display: inline-block;
+  margin: 0;
+}
+
+.operator-flash {
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.operator-flash--ok {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.operator-flash--error {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.btn--xs {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.72rem;
+}
+
 .operator-customer-list {
   list-style: none;
   margin: 0;

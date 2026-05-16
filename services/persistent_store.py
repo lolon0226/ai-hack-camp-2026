@@ -114,9 +114,17 @@ def enrich_operator_received_document_for_display(
     ocr = meta.get("ocr") if isinstance(meta.get("ocr"), dict) else {}
     match = meta.get("match") if isinstance(meta.get("match"), dict) else {}
 
-    hospital_name = str(
-        ocr.get("hospital_name") or meta.get("hospital_name") or ""
-    ).strip()
+    def _is_test_hospital_label(value: str) -> bool:
+        return str(value or "").strip().upper() in ("TEST_HOSPITAL", "TEST HOSPITAL")
+
+    hospital_name = str(ocr.get("hospital_name") or "").strip()
+    if not hospital_name:
+        meta_hosp = str(meta.get("hospital_name") or "").strip()
+        if meta_hosp and not _is_test_hospital_label(meta_hosp):
+            hospital_name = meta_hosp
+    if _is_test_hospital_label(hospital_name):
+        hospital_name = ""
+
     linked_name = str(doc.get("linked_customer_name") or "").strip()
     if linked_name == "—":
         linked_name = ""
@@ -133,7 +141,7 @@ def enrich_operator_received_document_for_display(
         customer_label = linked_name or str(ocr.get("patient_name") or "") or "고객"
         customer_link_linked = True
     elif match_status == "review_required":
-        customer_label = "고객 확인 필요"
+        customer_label = "추가 확인 필요"
         customer_link_linked = False
     elif customer_key and linked_name:
         customer_label = linked_name
@@ -155,20 +163,58 @@ def enrich_operator_received_document_for_display(
     total_disp = _format_amount_display(amounts.get("total_amount"))
     self_disp = _format_amount_display(amounts.get("self_pay_amount"))
     paid_disp = _format_amount_display(amounts.get("paid_amount"))
-    if total_disp:
-        amount_parts.append(f"총액 {total_disp}")
-    if self_disp:
-        amount_parts.append(f"본인부담 {self_disp}")
-    if paid_disp:
-        amount_parts.append(f"납부 {paid_disp}")
+    if amounts.get("confirmation_required"):
+        amount_parts.append(str(amounts.get("display_message") or "금액 후보 확인 필요"))
+    else:
+        if total_disp:
+            amount_parts.append(f"총액 {total_disp}")
+        if self_disp:
+            amount_parts.append(f"본인부담 {self_disp}")
+        if paid_disp:
+            amount_parts.append(f"납부 {paid_disp}")
 
     if matched_fields:
         match_basis = "+".join(str(f) for f in matched_fields) + " 일치"
     else:
         match_basis = "—"
 
+    ocr_status_raw = str(doc.get("ocr_status") or "pending").strip().lower()
+    has_core_ocr = bool(
+        str(ocr.get("patient_name") or "").strip()
+        and str(ocr.get("hospital_name") or "").strip()
+        and visit_dates
+        and amount_parts
+    )
+    if ocr_status_raw == "completed" and not has_core_ocr:
+        ocr_status_raw = "completed_partial"
+    if ocr_status_raw == "failed" and not str(ocr.get("error_message") or "").strip():
+        ocr["error_message"] = "OCR 실패: 텍스트 추출 불가"
+    ocr_status_labels = {
+        "pending": "OCR 대기",
+        "completed": "OCR 완료",
+        "completed_partial": "OCR 부분완료",
+        "failed": "OCR 실패",
+    }
+    duplicate_uploads = meta.get("duplicate_uploads")
+    if not isinstance(duplicate_uploads, list):
+        duplicate_uploads = []
+    duplicate_count = len(duplicate_uploads)
+    if duplicate_count > 0:
+        duplicate_display = f"중복 업로드 {duplicate_count}회"
+    elif meta.get("last_upload_duplicate"):
+        duplicate_display = "중복 문서"
+    else:
+        duplicate_display = ""
+
     doc["metadata"] = meta
-    doc["hospital_name_display"] = hospital_name or "—"
+    doc["hospital_name_display"] = hospital_name or "병원명 확인 필요"
+
+    dtype_raw = str(doc.get("document_type_candidate") or "").strip()
+    dtype_inferred = bool(meta.get("document_type_inferred"))
+    if not dtype_raw or (dtype_raw == "병원출력물" and not dtype_inferred):
+        doc["document_type_display"] = "문서종류 확인 필요"
+    else:
+        doc["document_type_display"] = dtype_raw
     doc["customer_link_label"] = customer_label
     doc["customer_link_linked"] = customer_link_linked
     doc["received_at_display"] = format_received_at_kst(received_at)
@@ -177,6 +223,41 @@ def enrich_operator_received_document_for_display(
     doc["match_basis_display"] = match_basis
     doc["ocr_match_status"] = match_status or "—"
     doc["ocr_patient_name_display"] = str(ocr.get("patient_name") or "").strip() or "—"
+    doc["ocr_status_display"] = ocr_status_labels.get(
+        ocr_status_raw, ocr_status_raw or "OCR 대기"
+    )
+    if ocr_status_raw == "failed":
+        doc["ocr_error_display"] = str(
+            ocr.get("error_message") or "OCR 실패: 텍스트 추출 불가"
+        ).strip()
+    else:
+        doc["ocr_error_display"] = str(ocr.get("error_message") or "").strip()
+    preview = str(ocr.get("text_preview") or "").strip()
+    doc["ocr_preview_display"] = preview[:1000] if preview else ""
+    debug_obj = ocr.get("debug") if isinstance(ocr.get("debug"), dict) else {}
+    debug_parts = [str(ocr.get("debug_message") or "").strip()]
+    if debug_obj:
+        for key in (
+            "extraction_source",
+            "pdf_text_len",
+            "ocr_text_len",
+            "used_dpi",
+            "tesseract_path",
+            "ocr_error_message",
+        ):
+            val = debug_obj.get(key)
+            if val not in (None, ""):
+                debug_parts.append(f"{key}={val}")
+    doc["ocr_debug_display"] = " | ".join(p for p in debug_parts if p)
+    doc["ocr_can_retry"] = ocr_status_raw in (
+        "pending",
+        "failed",
+        "completed_partial",
+        "completed",
+    )
+    doc["ocr_can_strong"] = bool(str(doc.get("file_path") or "").strip())
+    doc["duplicate_upload_display"] = duplicate_display
+    doc["has_duplicate_upload"] = bool(duplicate_display)
     return doc
 
 
@@ -1282,6 +1363,56 @@ def list_customer_match_targets(*, limit: int = 500) -> list[dict[str, Any]]:
     ]
 
 
+def record_received_document_duplicate_upload(
+    document_id: int,
+    *,
+    file_sha256: str,
+    received_at: str,
+) -> None:
+    """중복 업로드 시 기존 문서 metadata에 기록(신규 행 생성 없음)."""
+    doc_id = int(document_id or 0)
+    if doc_id <= 0:
+        return
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT metadata_json FROM operator_received_documents WHERE id = ?",
+            (doc_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return
+    meta = _parse_received_document_metadata(str(row[0] or ""))
+    history = meta.get("duplicate_uploads")
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "at": str(received_at or "").strip() or print_receiver_received_at_utc(),
+            "sha256": str(file_sha256 or "").strip().lower(),
+            "note": "중복 문서",
+        }
+    )
+    meta["duplicate_uploads"] = history[-20:]
+    meta["last_upload_duplicate"] = True
+    meta["last_upload_duplicate_at"] = history[-1]["at"]
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            UPDATE operator_received_documents
+            SET metadata_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps(meta, ensure_ascii=False), doc_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def update_operator_received_document_ocr(
     document_id: int,
     *,
@@ -1289,28 +1420,50 @@ def update_operator_received_document_ocr(
     ocr_status: str = "completed",
     customer_key: str | None = None,
     linked_customer_name: str = "",
+    document_type_candidate: str | None = None,
 ) -> None:
     """OCR·매칭 결과 반영."""
     _ensure_db_schema()
     conn = sqlite3.connect(DB_PATH)
     try:
-        conn.execute(
-            """
-            UPDATE operator_received_documents
-            SET metadata_json = ?,
-                ocr_status = ?,
-                customer_key = ?,
-                linked_customer_name = ?
-            WHERE id = ?
-            """,
-            (
-                json.dumps(metadata_json, ensure_ascii=False),
-                str(ocr_status or "completed").strip(),
-                str(customer_key or "").strip() or None,
-                str(linked_customer_name or "").strip(),
-                int(document_id),
-            ),
-        )
+        if document_type_candidate is not None:
+            conn.execute(
+                """
+                UPDATE operator_received_documents
+                SET metadata_json = ?,
+                    ocr_status = ?,
+                    customer_key = ?,
+                    linked_customer_name = ?,
+                    document_type_candidate = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(metadata_json, ensure_ascii=False),
+                    str(ocr_status or "completed").strip(),
+                    str(customer_key or "").strip() or None,
+                    str(linked_customer_name or "").strip(),
+                    str(document_type_candidate or "").strip(),
+                    int(document_id),
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE operator_received_documents
+                SET metadata_json = ?,
+                    ocr_status = ?,
+                    customer_key = ?,
+                    linked_customer_name = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(metadata_json, ensure_ascii=False),
+                    str(ocr_status or "completed").strip(),
+                    str(customer_key or "").strip() or None,
+                    str(linked_customer_name or "").strip(),
+                    int(document_id),
+                ),
+            )
         conn.commit()
     finally:
         conn.close()

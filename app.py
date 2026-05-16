@@ -145,6 +145,7 @@ from services.persistent_store import (  # noqa: E402
     rebuild_insurance_summary_for_customer,
     normalize_customer_fields,
     print_receiver_received_at_utc,
+    record_received_document_duplicate_upload,
     register_print_receiver_upload,
     save_actual_loss_claim_demo_state,
     save_customer,
@@ -2404,6 +2405,26 @@ def _apply_insurance_sample_complete(entry: dict[str, Any]) -> None:
     entry.pop("insurance_error", None)
 
 
+def _clear_insurance_codf_session_fields(entry: dict[str, Any]) -> None:
+    """contract-info 재조회 시 CODEF 세션만 정리(저장 원부·DB·자격증명 유지)."""
+    for key in (
+        "insurance_message",
+        "insurance_error",
+        "insurance_error_code",
+        "credit4u_req_secure_no",
+        "credit4u_two_way_info",
+        "credit4u_secure_no_input",
+        "credit4u_result_code",
+        "credit4u_result_message",
+        "credit4u_continue2_way",
+        "credit4u_method",
+        "credit4u_data_keys",
+        "credit4u_payload_debug",
+        "credit4u_second_status",
+    ):
+        entry.pop(key, None)
+
+
 def _clear_insurance_temp_fields(entry: dict[str, Any]) -> None:
     for key in (
         "insurance_message",
@@ -2437,6 +2458,78 @@ def _clear_insurance_temp_fields(entry: dict[str, Any]) -> None:
     ):
         entry.pop(key, None)
     entry["credit4u_second_status"] = "idle"
+
+
+def _should_show_insurance_contract_retry(entry: dict[str, Any]) -> bool:
+    """완료·실패·저장본 표시 후 CODEF contract-info 재조회 버튼."""
+    if entry.get("medical_status") != "completed":
+        return False
+    if str(entry.get("insurance_stage") or "") == "existing_account_required":
+        return False
+    status = entry.get("insurance_status")
+    if status in ("completed", "failed"):
+        return True
+    if status == "pending":
+        customer = entry.get("customer") or {}
+        return entry.get("insurance_source") == "saved_imported" or (
+            is_search_hash_secret_configured()
+            and _customer_has_stored_insurance_records(customer)
+        )
+    return False
+
+
+def _retry_insurance_contract_info(flow_id: str, entry: dict[str, Any]) -> None:
+    """저장 자격증명으로 contract-info 1차를 다시 호출(진료내역·회원가입 미시작)."""
+    if entry.get("medical_status") != "completed":
+        raise ValueError("medical records not completed")
+    _clear_insurance_codf_session_fields(entry)
+    entry.pop("insurance_source", None)
+    entry["credit4u_current_flow"] = "contract"
+    entry["credit4u_current_request_status"] = "requesting_contract_info"
+    if not _load_stored_credit4u_credentials_into_entry(entry):
+        _ensure_credit4u_credentials_for_entry(
+            entry,
+            allow_generate=not _is_credit4u_generation_blocked(entry),
+        )
+    if not _flow_has_usable_credit4u_credentials(entry):
+        _provision_credit4u_credentials(entry)
+    if not get_credit4u_secret():
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = (
+            "보험가입이력 조회 설정값이 필요합니다. (REDRIBBON_CREDIT4U_SECRET)"
+        )
+        entry["insurance_error_code"] = "MISSING_CREDIT4U_SECRET"
+        return
+    if not _flow_has_usable_credit4u_credentials(entry):
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = (
+            "저장된 신용정보원 계정이 없어 보험가입이력을 다시 조회할 수 없습니다."
+        )
+        entry["insurance_error_code"] = "MISSING_CREDIT4U_CREDENTIALS"
+        return
+    entry["insurance_status"] = "in_progress"
+    entry["insurance_stage"] = "requesting_contract_info"
+    entry["insurance_message"] = (
+        "신용정보원 보험가입이력을 다시 조회하는 중입니다. 잠시만 기다려 주세요."
+    )
+    try:
+        _start_credit4u_contract_info_first(flow_id, entry)
+    except Credit4uConfigError:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = (
+            "보험가입이력 조회 설정값이 필요합니다. (REDRIBBON_CREDIT4U_SECRET)"
+        )
+        entry["insurance_error_code"] = "MISSING_CREDIT4U_SECRET"
+    except ValueError:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = (
+            "고객 정보 또는 신용정보원 계정이 부족하여 다시 조회할 수 없습니다."
+        )
+        entry["insurance_error_code"] = "MISSING_CREDIT4U_CREDENTIALS"
 
 
 def _customer_has_stored_insurance_records(customer: dict[str, Any]) -> bool:
@@ -2505,6 +2598,16 @@ def _restore_saved_insurance_records_if_needed(entry: dict[str, Any]) -> bool:
         "register_email_auth_required",
     }
     if str(entry.get("insurance_stage") or "") in active_register_stages:
+        return False
+    active_contract_stages = {
+        "requesting_contract_info",
+        "submitting_secure_no",
+        "secure_no_required",
+    }
+    if (
+        entry.get("insurance_status") == "in_progress"
+        and str(entry.get("insurance_stage") or "") in active_contract_stages
+    ):
         return False
     customer = entry.get("customer") or {}
     if not is_search_hash_secret_configured():
@@ -2799,6 +2902,7 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
             else ""
         ),
         "hide_insurance_codf_start": entry.get("insurance_source") == "saved_imported",
+        "show_insurance_contract_retry": _should_show_insurance_contract_retry(entry),
         "credit4u_debug": credit4u_debug,
         "credit4u_secure_no": secure_no_view,
         **creds_view,
@@ -2909,42 +3013,71 @@ async def api_print_receiver_upload(
         customer_key=(customer_key or "").strip() or None,
         linked_customer_name=(linked_customer_name or "").strip(),
     )
-    if not reg.get("duplicate"):
-        from services.received_pdf_match import apply_received_pdf_ocr_and_match
+    from services.received_pdf_match import (
+        apply_received_pdf_ocr_and_match,
+        run_ocr_for_received_document,
+    )
 
+    is_duplicate = bool(reg.get("duplicate"))
+    doc_id = int(reg.get("document_id") or 0)
+    ocr_extra = {
+        "source": "print_receiver",
+        "hospital_name": (hospital_name or "").strip(),
+        "printer_name": (printer_name or "").strip(),
+        "original_filename": filename,
+        "sha256": digest,
+    }
+
+    if is_duplicate:
+        if stored_path.is_file():
+            stored_path.unlink(missing_ok=True)
+        logger.info(
+            "print-receiver upload: 중복 문서 document_id=%s sha256=%s filename=%s",
+            doc_id,
+            digest,
+            filename,
+        )
+        record_received_document_duplicate_upload(
+            doc_id,
+            file_sha256=digest,
+            received_at=received_at,
+        )
+        existing = get_received_document_by_id(doc_id)
+        if existing and str(existing.get("ocr_status") or "") == "pending":
+            run_ocr_for_received_document(doc_id, flow_store=FLOW_STORE)
+        doc = get_received_document_by_id(doc_id) or existing or reg.get("document") or {}
+        message = "중복 문서"
+        duplicate_note = "중복 문서(기존 문서 유지, 신규 등록 없음)"
+    else:
+        logger.info(
+            "print-receiver upload: 신규 문서 document_id=%s sha256=%s — OCR 시작",
+            doc_id,
+            digest,
+        )
         apply_received_pdf_ocr_and_match(
-            int(reg.get("document_id") or 0),
+            doc_id,
             pdf_path=stored_path,
             filename=filename,
             hospital_name=(hospital_name or "").strip(),
             document_type_candidate="",
             flow_store=FLOW_STORE,
-            extra_metadata={
-                "source": "print_receiver",
-                "hospital_name": (hospital_name or "").strip(),
-                "printer_name": (printer_name or "").strip(),
-                "original_filename": filename,
-                "sha256": digest,
-            },
+            extra_metadata=ocr_extra,
         )
-    doc = reg.get("document") or {}
-    if not reg.get("duplicate"):
-        refreshed = get_received_document_by_id(int(reg.get("document_id") or 0))
-        if refreshed:
-            doc = refreshed
+        doc = get_received_document_by_id(doc_id) or reg.get("document") or {}
+        message = "업로드 및 OCR 처리 완료"
+        duplicate_note = None
+
     return JSONResponse(
         {
             "ok": True,
-            "duplicate": bool(reg.get("duplicate")),
-            "document_id": reg.get("document_id"),
+            "duplicate": is_duplicate,
+            "document_id": doc_id,
             "sha256": digest,
             "received_at": received_at,
             "file_url": doc.get("file_url"),
-            "message": (
-                "duplicate_skipped"
-                if reg.get("duplicate")
-                else "uploaded"
-            ),
+            "ocr_status": doc.get("ocr_status"),
+            "message": message,
+            "duplicate_note": duplicate_note,
         }
     )
 
@@ -3894,16 +4027,29 @@ def hospital_insurance_request_complete(flow_id: str | None = None):
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
 
-@app.post("/hospital/insurance-request/retry")
-def hospital_insurance_request_retry(flow_id: str | None = None):
-    """보험가입이력 조회 실패 후 다시 시도."""
+@app.post("/hospital/insurance-request/cancel")
+def hospital_insurance_request_cancel(flow_id: str | None = None):
+    """진행 중 보험가입이력 조회 취소(처음 대기 상태로)."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
-    if entry.get("insurance_status") in ("failed", "in_progress"):
+    if entry.get("insurance_status") == "in_progress":
         entry["insurance_status"] = "pending"
         _clear_insurance_temp_fields(entry)
+    return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+
+@app.post("/hospital/insurance-request/retry")
+def hospital_insurance_request_retry(flow_id: str | None = None):
+    """보험가입이력 CODEF contract-info 재조회(저장 원부·자격증명 유지)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if entry.get("medical_status") != "completed":
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+    _retry_insurance_contract_info(fid, entry)
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
 
@@ -4118,13 +4264,77 @@ def operator_received_documents(request: Request):
     """병원 출력서류 수신함."""
     seed_operator_received_documents_if_empty()
     documents = list_operator_received_documents(limit=200)
+    flash = None
+    ocr_ok = str(request.query_params.get("ocr_ok") or "").strip()
+    if ocr_ok == "fast":
+        flash = {"level": "ok", "text": "빠른 OCR 처리를 완료했습니다."}
+    elif ocr_ok == "strong":
+        flash = {"level": "ok", "text": "강한 OCR 처리를 완료했습니다. (시간이 더 걸릴 수 있습니다)"}
+    elif ocr_ok:
+        flash = {"level": "ok", "text": "OCR 처리를 완료했습니다."}
+    elif request.query_params.get("ocr_error"):
+        flash = {
+            "level": "error",
+            "text": "OCR 처리에 실패했습니다. PDF 경로와 파일을 확인하세요.",
+        }
     return templates.TemplateResponse(
         request,
         "received_documents.html",
         {
             "documents": documents,
+            "flash": flash,
             **_printer_download_template_context(),
         },
+    )
+
+
+@app.post("/operator/received-documents/{document_id}/ocr")
+def operator_received_document_run_ocr(document_id: int):
+    """빠른 OCR(앞 2페이지·200DPI) 재실행."""
+    from services.received_pdf_match import run_ocr_for_received_document
+
+    doc = get_received_document_by_id(document_id)
+    if not doc:
+        return RedirectResponse(
+            "/operator/received-documents?ocr_error=1",
+            status_code=303,
+        )
+    result = run_ocr_for_received_document(
+        document_id, flow_store=FLOW_STORE, strong_ocr=False
+    )
+    if not result or str(result.get("ocr_status") or "") == "failed":
+        return RedirectResponse(
+            f"/operator/received-documents?ocr_error=1&document_id={document_id}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        "/operator/received-documents?ocr_ok=fast",
+        status_code=303,
+    )
+
+
+@app.post("/operator/received-documents/{document_id}/ocr-strong")
+def operator_received_document_run_ocr_strong(document_id: int):
+    """강한 OCR(다중 전처리·최대 10페이지) 재실행."""
+    from services.received_pdf_match import run_ocr_for_received_document
+
+    doc = get_received_document_by_id(document_id)
+    if not doc:
+        return RedirectResponse(
+            "/operator/received-documents?ocr_error=1",
+            status_code=303,
+        )
+    result = run_ocr_for_received_document(
+        document_id, flow_store=FLOW_STORE, strong_ocr=True
+    )
+    if not result or str(result.get("ocr_status") or "") == "failed":
+        return RedirectResponse(
+            f"/operator/received-documents?ocr_error=1&document_id={document_id}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        "/operator/received-documents?ocr_ok=strong",
+        status_code=303,
     )
 
 
