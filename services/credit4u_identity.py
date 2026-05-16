@@ -267,19 +267,28 @@ def persist_credit4u_credentials(
     customer: dict[str, Any],
     credentials: dict[str, Any],
     metadata: dict[str, Any] | None = None,
-) -> str | None:
+) -> str:
     """고객별 신용정보원 계정 영구 저장(SQLite, 비밀번호 암호화)."""
     from services.persistent_store import (
         PersistentStoreConfigError,
         save_credit4u_credentials,
     )
 
+    return save_credit4u_credentials(customer, credentials, metadata)
+
+
+def verify_persisted_credit4u_credentials(
+    customer: dict[str, Any],
+    *,
+    expected_id: str | None = None,
+) -> bool:
+    """저장 후 DB 재조회 검증."""
+    from services.persistent_store import verify_credit4u_credentials_saved
+
     try:
-        return save_credit4u_credentials(customer, credentials, metadata)
+        return verify_credit4u_credentials_saved(customer, expected_id=expected_id)
     except PersistentStoreConfigError:
-        return None
-    except ValueError:
-        return None
+        return False
 
 
 def restore_credit4u_credentials(customer: dict[str, Any]) -> dict[str, Any] | None:

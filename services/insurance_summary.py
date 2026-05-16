@@ -194,8 +194,20 @@ def _is_active_status(status: str) -> bool:
     if not status:
         return True
     normalized = status.strip().lower()
-    inactive = ("해지", "실효", "만기", "청약철회", "terminated", "cancelled", "expired")
+    if normalized in ("정상", "유지", "active", "effective"):
+        return True
+    inactive = ("해지", "실효", "만기", "청약철회", "terminated", "cancelled", "expired", "소멸", "취소")
     return not any(token in normalized for token in inactive)
+
+
+def format_contract_status_display(status: Any) -> str:
+    """화면용 계약상태 라벨."""
+    value = str(status or "").strip()
+    return value or "—"
+
+
+def is_active_contract_status(status: Any) -> bool:
+    return _is_active_status(str(status or ""))
 
 
 def is_claim_review_target(
@@ -288,10 +300,12 @@ def normalize_insurance_record(
     company, company_inferred = infer_insurance_company(record)
     product_name = _product_name_from_record(record) or "—"
     policy_no = _pick_text(record, *_POLICY_NO_KEYS) or "—"
-    status = _pick_text(record, *_STATUS_KEYS) or "유지"
+    status_raw = _pick_text(record, *_STATUS_KEYS) or "유지"
+    status = format_contract_status_display(status_raw)
     category = classify_insurance_product(record)
     review = is_claim_review_target(record, customer_name)
     raw_type = _pick_text(record, "raw_type", "resInsuranceType", "insuranceType") or "—"
+    active = is_active_contract_status(status_raw)
 
     return {
         "company": company,
@@ -299,11 +313,200 @@ def normalize_insurance_record(
         "product_name": product_name,
         "policy_no": policy_no,
         "status": status,
+        "is_active_status": active,
         "role": review["role"],
         "category": category,
         "include_for_claim_review": bool(review["include_for_claim_review"]),
         "review_reason": review["reason"],
         "raw_type": raw_type,
+    }
+
+
+def prepare_insurance_product_for_template(item: dict[str, Any]) -> dict[str, Any]:
+    """템플릿용 상품 필드 통일(저장본·import summary 형식 모두)."""
+    if not isinstance(item, dict):
+        return {
+            "product_name": "—",
+            "policy_no": "—",
+            "status": "—",
+            "role": "—",
+            "category": "—",
+            "include_for_claim_review": False,
+            "is_active_status": False,
+            "company_inferred": False,
+            "review_reason": "",
+        }
+    status_raw = (
+        item.get("status")
+        or item.get("contract_status")
+        or item.get("resContractStatus")
+        or ""
+    )
+    status = format_contract_status_display(status_raw)
+    role = str(item.get("role") or "").strip()
+    if not role:
+        insured = str(item.get("insured_name") or item.get("resInsuredPerson") or "").strip()
+        contractor = str(item.get("contractor") or item.get("resContractor") or "").strip()
+        if insured:
+            role = "피보험자"
+        elif contractor:
+            role = "계약자"
+        else:
+            role = "—"
+    include = item.get("include_for_claim_review")
+    if include is None:
+        include = bool(
+            role == "피보험자" and is_active_contract_status(status_raw)
+        )
+    return {
+        "company": str(item.get("company") or item.get("company_name") or "").strip(),
+        "company_inferred": bool(item.get("company_inferred")),
+        "product_name": str(
+            item.get("product_name")
+            or item.get("insurance_name")
+            or item.get("resInsuranceName")
+            or "—"
+        ).strip()
+        or "—",
+        "policy_no": str(
+            item.get("policy_no")
+            or item.get("policy_number")
+            or item.get("resPolicyNumber")
+            or "—"
+        ).strip()
+        or "—",
+        "status": status,
+        "is_active_status": is_active_contract_status(status_raw),
+        "role": role,
+        "category": str(item.get("category") or item.get("source_type_label") or "—").strip()
+        or "—",
+        "include_for_claim_review": bool(include),
+        "review_reason": str(item.get("review_reason") or "").strip(),
+        "raw_type": str(item.get("raw_type") or item.get("source_type") or "").strip(),
+    }
+
+
+def prepare_insurance_company_groups_for_template(
+    groups: Any,
+) -> list[dict[str, Any]]:
+    """회사별 그룹 키를 템플릿과 일치(company, count, products)."""
+    if not isinstance(groups, list):
+        return []
+    prepared: list[dict[str, Any]] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        products_raw = group.get("products")
+        if not isinstance(products_raw, list):
+            products_raw = group.get("items") or group.get("list") or []
+        products = [
+            prepare_insurance_product_for_template(item)
+            for item in products_raw
+            if isinstance(item, dict)
+        ]
+        company = (
+            str(group.get("company") or group.get("company_name") or "").strip() or "—"
+        )
+        count = int(
+            group.get("count")
+            or group.get("total_count")
+            or group.get("contract_count")
+            or len(products)
+        )
+        claim_review_count = int(
+            group.get("claim_review_count")
+            or group.get("include_count")
+            or sum(1 for p in products if p.get("include_for_claim_review"))
+        )
+        prepared.append(
+            {
+                "company": company,
+                "company_name": company,
+                "count": count,
+                "total_count": count,
+                "claim_review_count": claim_review_count,
+                "include_count": claim_review_count,
+                "products": products,
+            }
+        )
+    return prepared
+
+
+_IMPORTED_CONTRACT_BUCKETS: tuple[str, ...] = (
+    "actual_loss_contracts",
+    "flat_rate_contracts",
+    "savings_contracts",
+    "car_contracts",
+    "property_contracts",
+)
+
+
+def flatten_imported_insurance_records(normalized_payload: Any) -> list[dict[str, Any]]:
+    """저장된 normalized_result(dict) 또는 records 리스트를 화면용 계약 리스트로 펼침."""
+    if isinstance(normalized_payload, list):
+        return [row for row in normalized_payload if isinstance(row, dict)]
+    if not isinstance(normalized_payload, dict):
+        return []
+
+    for key in ("records", "normalized_records", "insurance_records", "resInsuranceList"):
+        nested = normalized_payload.get(key)
+        if isinstance(nested, list) and nested:
+            return [row for row in nested if isinstance(row, dict)]
+
+    records: list[dict[str, Any]] = []
+    for bucket in _IMPORTED_CONTRACT_BUCKETS:
+        items = normalized_payload.get(bucket)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row.setdefault("raw_type", bucket)
+            records.append(row)
+    return records
+
+
+def resolve_stored_insurance_for_display(
+    normalized_payload: Any,
+    summary_payload: Any,
+    customer_name: str,
+) -> dict[str, Any]:
+    """SQLite insurance_records 저장본 → completed 화면용 구조."""
+    flat_records = flatten_imported_insurance_records(normalized_payload)
+    normalized, company_groups = build_insurance_company_groups(flat_records, customer_name)
+    summary = insurance_summary_from_records(normalized)
+
+    if isinstance(summary_payload, dict):
+        imported_counts = summary_payload.get("counts")
+        insured_summary = summary_payload.get("insured_summary")
+        if isinstance(insured_summary, dict):
+            inner = insured_summary.get("counts")
+            if isinstance(inner, dict) and inner.get("insured_product_count") is not None:
+                summary = {
+                    "total": int(inner.get("insured_product_count") or summary["total"]),
+                    "insured_valid": int(
+                        inner.get("insured_active_product_count") or summary["insured_valid"]
+                    ),
+                    "company_count": int(
+                        inner.get("insured_company_count") or summary["company_count"]
+                    ),
+                }
+            elif isinstance(imported_counts, dict):
+                contract_total = sum(
+                    int(imported_counts.get(bucket) or 0)
+                    for bucket in _IMPORTED_CONTRACT_BUCKETS
+                )
+                if contract_total > 0:
+                    summary["total"] = contract_total
+
+    return {
+        "insurance_records": normalized,
+        "insurance_company_groups": prepare_insurance_company_groups_for_template(
+            company_groups
+        ),
+        "insurance_summary": summary,
+        "flat_record_count": len(flat_records),
     }
 
 
@@ -351,6 +554,7 @@ def build_insurance_company_groups(
         company_groups.append(
             {
                 "company": company,
+                "company_name": company,
                 "count": len(products),
                 "claim_review_count": include_count,
                 "include_count": include_count,
@@ -359,4 +563,4 @@ def build_insurance_company_groups(
             }
         )
 
-    return normalized, company_groups
+    return normalized, prepare_insurance_company_groups_for_template(company_groups)

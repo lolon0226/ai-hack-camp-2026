@@ -112,6 +112,7 @@ def ensure_storage() -> None:
                 id_attempt_no INTEGER NOT NULL DEFAULT 0,
                 email_domain TEXT,
                 register_completed_at TEXT,
+                metadata_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -131,9 +132,67 @@ def ensure_storage() -> None:
                 ON insurance_records (customer_key, created_at DESC);
             """
         )
+        _migrate_credit4u_credentials_columns(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+_CREDIT4U_CREDENTIALS_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("credential_version", "TEXT NOT NULL DEFAULT 'v1'"),
+    ("credential_source", "TEXT NOT NULL DEFAULT 'generated'"),
+    ("id_attempt_no", "INTEGER NOT NULL DEFAULT 0"),
+    ("email_domain", "TEXT"),
+    ("register_completed_at", "TEXT"),
+    ("updated_at", "TEXT"),
+    ("metadata_json", "TEXT"),
+)
+
+
+def _migrate_credit4u_credentials_columns(conn: sqlite3.Connection) -> None:
+    """기존 DB에 credit4u_credentials 누락 컬럼만 ALTER TABLE로 추가."""
+    table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='credit4u_credentials'"
+    ).fetchone()
+    if not table_exists:
+        return
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(credit4u_credentials)").fetchall()
+    }
+    # 레거시 별칭: 과거 스키마에 credit4u_id_attempt_no만 있는 경우 id_attempt_no로 대체
+    if "credit4u_id_attempt_no" in columns and "id_attempt_no" not in columns:
+        try:
+            conn.execute(
+                "ALTER TABLE credit4u_credentials "
+                "RENAME COLUMN credit4u_id_attempt_no TO id_attempt_no"
+            )
+        except sqlite3.OperationalError:
+            conn.execute(
+                "ALTER TABLE credit4u_credentials "
+                "ADD COLUMN id_attempt_no INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "UPDATE credit4u_credentials "
+                "SET id_attempt_no = credit4u_id_attempt_no "
+                "WHERE id_attempt_no = 0"
+            )
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(credit4u_credentials)").fetchall()
+        }
+    for col_name, col_def in _CREDIT4U_CREDENTIALS_MIGRATIONS:
+        if col_name in columns:
+            continue
+        conn.execute(
+            f"ALTER TABLE credit4u_credentials ADD COLUMN {col_name} {col_def}"
+        )
+        columns.add(col_name)
+
+
+def _ensure_db_schema() -> None:
+    """스키마 생성·마이그레이션(모든 DB 접근 전 호출)."""
+    ensure_storage()
 
 
 def make_customer_key(customer: dict[str, Any]) -> str:
@@ -363,6 +422,7 @@ def save_credit4u_credentials(
     metadata: dict[str, Any] | None = None,
 ) -> str:
     """고객별 신용정보원 ID·비밀번호 영구 저장(비밀번호는 AES-GCM)."""
+    _ensure_db_schema()
     customer_key = make_customer_key(customer)
     save_customer(customer)
     meta = metadata if isinstance(metadata, dict) else {}
@@ -393,6 +453,7 @@ def save_credit4u_credentials(
         or credentials.get("credential_version")
         or "v1"
     ).strip() or "v1"
+    metadata_json = _safe_metadata_json(meta)
     now = _utc_now_iso()
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -406,8 +467,8 @@ def save_credit4u_credentials(
             INSERT INTO credit4u_credentials (
                 customer_key, credit4u_id, password_encrypted, credential_source,
                 credential_version, id_attempt_no, email_domain, register_completed_at,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                metadata_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(customer_key) DO UPDATE SET
                 credit4u_id = excluded.credit4u_id,
                 password_encrypted = excluded.password_encrypted,
@@ -416,6 +477,7 @@ def save_credit4u_credentials(
                 id_attempt_no = excluded.id_attempt_no,
                 email_domain = excluded.email_domain,
                 register_completed_at = COALESCE(excluded.register_completed_at, register_completed_at),
+                metadata_json = COALESCE(excluded.metadata_json, metadata_json),
                 updated_at = excluded.updated_at
             """,
             (
@@ -427,6 +489,7 @@ def save_credit4u_credentials(
                 attempt_no,
                 email_domain or None,
                 register_completed_at,
+                metadata_json,
                 created_at,
                 now,
             ),
@@ -438,8 +501,49 @@ def save_credit4u_credentials(
     return customer_key
 
 
+def _safe_metadata_json(meta: dict[str, Any]) -> str | None:
+    """민감 필드 제외 metadata JSON."""
+    if not meta:
+        return None
+    safe: dict[str, Any] = {}
+    for key, value in meta.items():
+        lowered = str(key).lower()
+        if any(
+            token in lowered
+            for token in ("password", "identity", "phone", "주민", "payload")
+        ):
+            continue
+        if lowered in ("email",) and "@" in str(value):
+            domain = _email_domain_only(str(value))
+            if domain:
+                safe["email_domain"] = domain
+            continue
+        safe[key] = value
+    if not safe:
+        return None
+    return json.dumps(safe, ensure_ascii=False)
+
+
+def verify_credit4u_credentials_saved(
+    customer: dict[str, Any],
+    *,
+    expected_id: str | None = None,
+) -> bool:
+    """저장 직후 DB 재조회로 ID·비밀번호 존재 확인."""
+    loaded = load_credit4u_credentials(customer)
+    if not loaded:
+        return False
+    saved_id = str(loaded.get("id") or "").strip()
+    if not saved_id or not str(loaded.get("password") or "").strip():
+        return False
+    if expected_id and saved_id != str(expected_id).strip():
+        return False
+    return True
+
+
 def load_credit4u_credentials(customer: dict[str, Any]) -> dict[str, Any] | None:
     """저장된 신용정보원 계정 복원(비밀번호 평문은 메모리에서만)."""
+    _ensure_db_schema()
     try:
         customer_key = make_customer_key(customer)
     except PersistentStoreConfigError:
@@ -529,38 +633,73 @@ def save_insurance_records(
     return customer_key
 
 
+def load_latest_insurance_record_by_customer_key(
+    customer_key: str,
+) -> dict[str, Any] | None:
+    """customer_key 기준 insurance_records 최신 1건."""
+    key = str(customer_key or "").strip()
+    if not key:
+        return None
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT id, flow_id, raw_response_json, normalized_json, summary_json,
+                   source, created_at
+            FROM insurance_records
+            WHERE customer_key = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (key,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    raw_text = str(row[2] or "")
+    normalized_text = str(row[3] or "")
+    summary_text = str(row[4] or "")
+    return {
+        "record_id": int(row[0]),
+        "customer_key": key,
+        "flow_id": row[1],
+        "raw_response": json.loads(raw_text or "{}"),
+        "normalized_payload": json.loads(normalized_text or "null"),
+        "summary": json.loads(summary_text or "{}"),
+        "source": row[5],
+        "created_at": row[6],
+        "raw_len": len(raw_text),
+        "normalized_len": len(normalized_text),
+        "summary_len": len(summary_text),
+    }
+
+
 def load_latest_insurance_records(customer: dict[str, Any]) -> dict[str, Any] | None:
     """고객별 최신 보험가입이력 저장본."""
     try:
         customer_key = make_customer_key(customer)
     except PersistentStoreConfigError:
         return None
-
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        row = conn.execute(
-            """
-            SELECT flow_id, raw_response_json, normalized_json, summary_json, source, created_at
-            FROM insurance_records
-            WHERE customer_key = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            """,
-            (customer_key,),
-        ).fetchone()
-    finally:
-        conn.close()
-
-    if not row:
+    loaded = load_latest_insurance_record_by_customer_key(customer_key)
+    if not loaded:
         return None
+    normalized_payload = loaded.get("normalized_payload")
     return {
-        "flow_id": row[0],
-        "raw_response": json.loads(row[1] or "{}"),
-        "normalized_records": json.loads(row[2] or "[]"),
-        "summary": json.loads(row[3] or "{}"),
-        "source": row[4],
-        "created_at": row[5],
+        **loaded,
+        "normalized_records": normalized_payload,
     }
+
+
+def init_storage() -> None:
+    """스키마 생성·마이그레이션(ensure_storage 별칭)."""
+    ensure_storage()
+
+
+def storage_health() -> dict[str, Any]:
+    """DEBUG용 DB 상태(ensure_storage 별칭)."""
+    return get_storage_health()
 
 
 def get_storage_health() -> dict[str, Any]:
@@ -573,9 +712,20 @@ def get_storage_health() -> dict[str, Any]:
     insurance_records_count = 0
     latest_medical_created_at: str | None = None
     latest_insurance_created_at: str | None = None
+    credit4u_credentials_columns: list[str] = []
     if exists:
         conn = sqlite3.connect(DB_PATH)
         try:
+            table_exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='credit4u_credentials'"
+            ).fetchone()
+            if table_exists:
+                credit4u_credentials_columns = [
+                    str(row[1])
+                    for row in conn.execute(
+                        "PRAGMA table_info(credit4u_credentials)"
+                    ).fetchall()
+                ]
             row = conn.execute("SELECT COUNT(*) FROM customers").fetchone()
             customers_count = int(row[0] or 0) if row else 0
             row = conn.execute("SELECT COUNT(*) FROM medical_records").fetchone()
@@ -606,4 +756,7 @@ def get_storage_health() -> dict[str, Any]:
         "latest_medical_created_at": latest_medical_created_at or "—",
         "latest_insurance_created_at": latest_insurance_created_at or "—",
         "search_hash_secret_configured": is_search_hash_secret_configured(),
+        "credit4u_credentials_columns": credit4u_credentials_columns,
+        "credential_version_column_present": "credential_version"
+        in credit4u_credentials_columns,
     }

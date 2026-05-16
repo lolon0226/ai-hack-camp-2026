@@ -74,17 +74,25 @@
       </div>
     </section>
 
+    {% if insurance_source_label %}
+    <p class="hospital-form-error hospital-form-error--info" role="status">{{ insurance_source_label }}</p>
+    {% endif %}
+
     {% if insurance_message and insurance_status != "completed" %}
     <p class="hospital-form-error hospital-form-error--info" role="status">{{ insurance_message }}</p>
     {% endif %}
 
     <section class="hospital-insurance-state" aria-live="polite">
-      {% if insurance_status == "pending" %}
+      {% if insurance_status == "pending" and not hide_insurance_codf_start %}
       <p class="hospital-insurance-state__lead">보험가입이력 조회가 필요합니다.</p>
       <p class="hospital-insurance-state__hint">처음 조회하는 고객 또는 회원가입이 필요한 고객은 자동 생성 계정으로 진행합니다.</p>
       <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}" data-loading-message="신용정보원 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요.">
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">보험가입이력 조회 시작</button>
       </form>
+
+      {% elif insurance_status == "pending" and hide_insurance_codf_start %}
+      <p class="hospital-insurance-state__lead">저장된 보험가입이력 사용 중</p>
+      <p class="hospital-insurance-state__desc">이 고객은 DB에 저장된 보험가입이력 원부가 있습니다. 화면을 새로고침하면 자동으로 완료 상태로 표시됩니다.</p>
 
       {% elif insurance_status == "in_progress" %}
       {% if insurance_stage == "secure_no_required" %}
@@ -369,40 +377,73 @@
       {% endif %}
 
       {% elif insurance_status == "completed" %}
+      <div class="hospital-insurance-completed">
       <p class="hospital-insurance-state__lead">보험가입이력 수신 완료</p>
-      <ul class="hospital-insurance-summary-counts">
-        <li>전체 보험가입이력 <strong>{{ insurance_summary.total }}</strong>건</li>
-        <li>피보험자 기준 유효 보험 <strong>{{ insurance_summary.insured_valid }}</strong>건</li>
-        <li>보험회사 <strong>{{ insurance_summary.company_count }}</strong>개</li>
-      </ul>
+      {% if insurance_using_saved_import %}
+      <p class="hospital-insurance-state__desc hospital-insurance-state__desc--muted">저장된 보험가입이력 기준입니다.</p>
+      {% endif %}
+      <div class="hospital-insurance-summary-panel" aria-label="보험가입이력 요약">
+        <ul class="hospital-insurance-summary-counts">
+          <li class="hospital-insurance-summary-counts__item">
+            <span class="hospital-insurance-summary-counts__label">전체 보험가입이력</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.total }}</strong>
+            <span class="hospital-insurance-summary-counts__unit">건</span>
+          </li>
+          <li class="hospital-insurance-summary-counts__item">
+            <span class="hospital-insurance-summary-counts__label">피보험자 기준 유효 보험</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.insured_valid }}</strong>
+            <span class="hospital-insurance-summary-counts__unit">건</span>
+          </li>
+          <li class="hospital-insurance-summary-counts__item">
+            <span class="hospital-insurance-summary-counts__label">보험회사</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.company_count }}</strong>
+            <span class="hospital-insurance-summary-counts__unit">개</span>
+          </li>
+        </ul>
+      </div>
 
       {% if insurance_company_groups %}
       <div class="hospital-insurance-companies" aria-label="보험회사별 가입이력">
         {% for group in insurance_company_groups %}
         <article class="hospital-insurance-company-card">
           <header class="hospital-insurance-company-card__header">
-            <h3 class="hospital-insurance-company-card__title">{{ group.company }}</h3>
+            <h3 class="hospital-insurance-company-card__title">{{ group.company or group.company_name }}</h3>
             <p class="hospital-insurance-company-card__meta">
-              보험 <strong>{{ group.count }}</strong>건 · 청구검토 포함 <strong>{{ group.claim_review_count }}</strong>건
+              보험 <strong>{{ group.count or group.total_count }}</strong>건 ·
+              청구검토 포함 <strong>{{ group.claim_review_count or group.include_count }}</strong>건
             </p>
           </header>
+          {% set products = group.products or group.items or [] %}
+          {% if products %}
           <ul class="hospital-insurance-product-list">
-            {% for product in group.products %}
+            {% for product in products %}
             <li class="hospital-insurance-product{% if not product.include_for_claim_review %} hospital-insurance-product--excluded{% endif %}">
               <div class="hospital-insurance-product__main">
                 <p class="hospital-insurance-product__name">{{ product.product_name }}</p>
-                <p class="hospital-insurance-product__meta">
-                  <span>증권번호 {{ product.policy_no }}</span>
-                  <span>{{ product.status }}</span>
-                  <span>{{ product.role }}</span>
-                  <span>{{ product.category }}</span>
-                  {% if product.company_inferred %}
-                  <span class="hospital-insurance-product__inferred">회사명 추정</span>
-                  {% endif %}
-                </p>
+                <dl class="hospital-insurance-product__facts">
+                  <div class="hospital-insurance-product__fact">
+                    <dt>증권번호</dt>
+                    <dd>{{ product.policy_no }}</dd>
+                  </div>
+                  <div class="hospital-insurance-product__fact">
+                    <dt>계약상태</dt>
+                    <dd>{{ product.status }}</dd>
+                  </div>
+                  <div class="hospital-insurance-product__fact">
+                    <dt>역할</dt>
+                    <dd>{{ product.role }}</dd>
+                  </div>
+                  <div class="hospital-insurance-product__fact">
+                    <dt>상품분류</dt>
+                    <dd>{{ product.category }}</dd>
+                  </div>
+                </dl>
+                {% if product.company_inferred %}
+                <p class="hospital-insurance-product__inferred">회사명 추정</p>
+                {% endif %}
               </div>
               <div class="hospital-insurance-product__badge">
-                {% if product.include_for_claim_review and product.role == "피보험자" and product.status == "유지" %}
+                {% if product.include_for_claim_review and product.role == "피보험자" and product.is_active_status %}
                 <span class="hospital-insurance-badge hospital-insurance-badge--include">청구검토 포함</span>
                 {% elif product.role == "계약자" or product.role == "수익자" %}
                 <span class="hospital-insurance-badge hospital-insurance-badge--ref">참고/제외</span>
@@ -413,10 +454,14 @@
             </li>
             {% endfor %}
           </ul>
+          {% else %}
+          <p class="hospital-insurance-company-card__empty">표시할 상품이 없습니다.</p>
+          {% endif %}
         </article>
         {% endfor %}
       </div>
       {% endif %}
+      </div>
 
       <p class="hospital-insurance-state__next">
         <a class="btn btn--primary hospital-insurance-state__btn" href="/hospital/analysis-ready?flow_id={{ flow_id }}">통합 결과확인으로 이동</a>
@@ -640,6 +685,34 @@
           <dd>{{ credit4u_debug.insurance_records_saved }}</dd>
         </div>
         <div class="hospital-insurance-debug__row">
+          <dt>stored_insurance_records_exists</dt>
+          <dd>{{ credit4u_debug.stored_insurance_records_exists }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>loaded_insurance_record_id</dt>
+          <dd>{{ credit4u_debug.loaded_insurance_record_id }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>loaded_insurance_record_source</dt>
+          <dd>{{ credit4u_debug.loaded_insurance_record_source }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>insurance_source</dt>
+          <dd>{{ credit4u_debug.insurance_source }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>loaded_insurance_raw_len</dt>
+          <dd>{{ credit4u_debug.loaded_insurance_raw_len }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>loaded_insurance_normalized_len</dt>
+          <dd>{{ credit4u_debug.loaded_insurance_normalized_len }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>loaded_insurance_summary_len</dt>
+          <dd>{{ credit4u_debug.loaded_insurance_summary_len }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
           <dt>credential_version</dt>
           <dd>{{ credit4u_debug.credential_version }}</dd>
         </div>
@@ -654,6 +727,14 @@
         <div class="hospital-insurance-debug__row">
           <dt>credential_save_error</dt>
           <dd>{{ credit4u_debug.credential_save_error }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credential_loaded_from_store</dt>
+          <dd>{{ credit4u_debug.credential_loaded_from_store }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credential_generated_new</dt>
+          <dd>{{ credit4u_debug.credential_generated_new }}</dd>
         </div>
         {% if credit4u_debug.register_signup_info_post_entered == "예" %}
         <div class="hospital-insurance-debug__row">

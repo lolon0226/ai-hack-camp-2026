@@ -77,10 +77,14 @@ from services.credit4u_identity import (
     regenerate_credit4u_credentials_for_signup,
     restore_credit4u_credentials,
     validate_credit4u_id,
+    verify_persisted_credit4u_credentials,
 )
 from services.insurance_summary import (
     build_insurance_company_groups,
+    flatten_imported_insurance_records,
     insurance_summary_from_records,
+    prepare_insurance_company_groups_for_template,
+    resolve_stored_insurance_for_display,
 )
 from services.codef_client import (
     CodefClientError,
@@ -927,8 +931,59 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _ensure_credit4u_credentials_for_entry(entry: dict[str, Any]) -> None:
-    """신용정보원 계정: 저장본 → FLOW_STORE → 신규 생성."""
+def _format_credential_save_error(exc: BaseException) -> str:
+    """DEBUG용 저장 오류(비밀번호·주민·전화 원문 미포함)."""
+    raw = f"{type(exc).__name__}: {str(exc)[:200]}"
+    scrubbed = re.sub(
+        r"(?i)(password|passwd|비밀번호)\s*[=:]\s*\S+",
+        r"\1=***",
+        raw,
+    )
+    scrubbed = re.sub(r"Aa![^\s]{4,}#?", "Aa!***", scrubbed)
+    return scrubbed[:220]
+
+
+def _is_credit4u_generation_blocked(entry: dict[str, Any]) -> bool:
+    """이미 가입·기존 계정 입력 단계에서는 신규 ID/PW 생성 금지."""
+    stage = str(entry.get("insurance_stage") or "")
+    if stage in ("already_registered", "existing_account_required"):
+        return True
+    if entry.get("already_registered_handled"):
+        return True
+    if str(entry.get("credit4u_result_code") or "") == "CF-12069":
+        return True
+    return False
+
+
+def _apply_restored_credit4u_credentials(
+    entry: dict[str, Any],
+    restored: dict[str, Any],
+) -> None:
+    stored_source = str(restored.get("source") or "generated").strip()
+    entry["credit4u_credentials"] = {
+        "id": restored["id"],
+        "password": restored["password"],
+        "generated": stored_source == "generated",
+        "source": "stored",
+        "credential_version": str(
+            restored.get("credential_version") or CREDIT4U_CREDENTIAL_VERSION
+        ),
+    }
+    entry["credential_source"] = stored_source
+    entry["credential_version"] = entry["credit4u_credentials"]["credential_version"]
+    entry["credit4u_id_attempt_no"] = int(restored.get("credit4u_id_attempt_no") or 0)
+    entry["credit4u_credentials_restored"] = True
+    entry["stored_credit4u_credentials_exists"] = True
+    entry["credential_loaded_from_store"] = True
+    entry["credential_generated_new"] = False
+
+
+def _ensure_credit4u_credentials_for_entry(
+    entry: dict[str, Any],
+    *,
+    allow_generate: bool = True,
+) -> None:
+    """신용정보원 계정: 1) DB 저장본 2) FLOW_STORE 3) 신규 생성(허용 시만)."""
     entry.pop("credit4u_credentials_error", None)
     customer = entry.get("customer") or {}
     if not all(
@@ -940,35 +995,41 @@ def _ensure_credit4u_credentials_for_entry(entry: dict[str, Any]) -> None:
     ):
         return
 
-    entry["stored_credit4u_credentials_exists"] = False
+    entry.setdefault("stored_credit4u_credentials_exists", False)
+
     if is_search_hash_secret_configured():
-        restored = restore_credit4u_credentials(customer)
+        try:
+            restored = restore_credit4u_credentials(customer)
+        except Exception:
+            restored = None
         if isinstance(restored, dict) and str(restored.get("id") or "").strip():
-            stored_source = str(restored.get("source") or "stored").strip()
-            entry["credit4u_credentials"] = {
-                "id": restored["id"],
-                "password": restored["password"],
-                "generated": stored_source in ("generated", "stored"),
-                "source": "stored",
-                "credential_version": str(
-                    restored.get("credential_version") or CREDIT4U_CREDENTIAL_VERSION
-                ),
-            }
-            entry["credential_source"] = stored_source
-            entry["credential_version"] = entry["credit4u_credentials"]["credential_version"]
-            entry["credit4u_id_attempt_no"] = int(restored.get("credit4u_id_attempt_no") or 0)
-            entry["credit4u_credentials_restored"] = True
-            entry["stored_credit4u_credentials_exists"] = True
-            return
+            if str(restored.get("password") or "").strip():
+                _apply_restored_credit4u_credentials(entry, restored)
+                return
 
     existing = entry.get("credit4u_credentials")
     if isinstance(existing, dict) and str(existing.get("id") or "").strip():
         if str(existing.get("password") or "").strip():
+            entry["credential_loaded_from_store"] = False
+            entry["credential_generated_new"] = False
+            if entry.get("credit4u_id_attempt_no") is None:
+                entry["credit4u_id_attempt_no"] = int(
+                    existing.get("credit4u_id_attempt_no") or 0
+                )
             return
+
+    if _is_credit4u_generation_blocked(entry) or not allow_generate:
+        entry.pop("credit4u_credentials", None)
+        entry["credit4u_credentials_error"] = (
+            "저장된 신용정보원 계정 또는 기존 계정 입력이 필요합니다."
+        )
+        entry["credential_generated_new"] = False
+        return
 
     if not get_credit4u_secret():
         entry["credit4u_credentials_error"] = "REDRIBBON_CREDIT4U_SECRET 설정 필요"
         entry.pop("credit4u_credentials", None)
+        entry["credential_generated_new"] = False
         return
     try:
         attempt = int(entry.get("credit4u_id_attempt_no") or 0)
@@ -979,10 +1040,12 @@ def _ensure_credit4u_credentials_for_entry(entry: dict[str, Any]) -> None:
     except Credit4uConfigError:
         entry["credit4u_credentials_error"] = "REDRIBBON_CREDIT4U_SECRET 설정 필요"
         entry.pop("credit4u_credentials", None)
+        entry["credential_generated_new"] = False
         return
     except ValueError:
         entry["credit4u_credentials_error"] = "신용정보원 계정을 생성할 수 없습니다."
         entry.pop("credit4u_credentials", None)
+        entry["credential_generated_new"] = False
         return
     entry["credit4u_credentials"] = {
         "id": creds["id"],
@@ -995,11 +1058,14 @@ def _ensure_credit4u_credentials_for_entry(entry: dict[str, Any]) -> None:
     }
     entry["credential_source"] = "generated"
     entry["credential_version"] = entry["credit4u_credentials"]["credential_version"]
+    entry["credential_loaded_from_store"] = False
+    entry["credential_generated_new"] = True
 
 
 def _provision_credit4u_credentials(entry: dict[str, Any]) -> None:
     """고객 flow에 신용정보원 계정 준비(저장본 우선)."""
-    _ensure_credit4u_credentials_for_entry(entry)
+    allow_generate = not _is_credit4u_generation_blocked(entry)
+    _ensure_credit4u_credentials_for_entry(entry, allow_generate=allow_generate)
 
 
 def _credit4u_credentials_view_context(entry: dict[str, Any]) -> dict[str, Any]:
@@ -1286,7 +1352,11 @@ def _regenerate_credit4u_signup_credentials(entry: dict[str, Any]) -> None:
         "password": renewed["password"],
         "generated": True,
         "source": "generated",
+        "credential_version": str(
+            renewed.get("credential_version") or CREDIT4U_CREDENTIAL_VERSION
+        ),
     }
+    entry["credential_version"] = entry["credit4u_credentials"]["credential_version"]
     required = list(entry.get("credit4u_signup_required_fields") or [])
     if "id" not in required and entry.get("credit4u_signup_id_retry"):
         required = ["id", *required]
@@ -1306,31 +1376,21 @@ def _load_stored_credit4u_credentials_into_entry(entry: dict[str, Any]) -> bool:
     customer = entry.get("customer") or {}
     if not is_search_hash_secret_configured():
         return False
-    restored = restore_credit4u_credentials(customer)
+    try:
+        restored = restore_credit4u_credentials(customer)
+    except Exception:
+        return False
     if not isinstance(restored, dict) or not str(restored.get("id") or "").strip():
         return False
     if not str(restored.get("password") or "").strip():
         return False
-    stored_source = str(restored.get("source") or "stored").strip()
-    entry["credit4u_credentials"] = {
-        "id": restored["id"],
-        "password": restored["password"],
-        "generated": stored_source in ("generated", "stored"),
-        "source": "stored",
-        "credential_version": str(
-            restored.get("credential_version") or CREDIT4U_CREDENTIAL_VERSION
-        ),
-    }
-    entry["credential_source"] = "stored"
-    entry["credential_version"] = entry["credit4u_credentials"]["credential_version"]
-    entry["credit4u_id_attempt_no"] = int(restored.get("credit4u_id_attempt_no") or 0)
-    entry["stored_credit4u_credentials_exists"] = True
-    entry["credit4u_credentials_restored"] = True
+    _apply_restored_credit4u_credentials(entry, restored)
+    entry["credential_source"] = str(restored.get("source") or "generated").strip()
     return True
 
 
 def _save_credit4u_credentials_to_store(entry: dict[str, Any]) -> bool:
-    """회원가입 완료 등 최종 확정 계정을 고객별 저장."""
+    """회원가입 완료 등 FLOW_STORE 최종 확정 계정을 고객별 저장·재조회 검증."""
     entry.pop("credential_save_error", None)
     customer = entry.get("customer") or {}
     creds = entry.get("credit4u_credentials") or {}
@@ -1340,17 +1400,25 @@ def _save_credit4u_credentials_to_store(entry: dict[str, Any]) -> bool:
         entry["credit4u_credentials_saved"] = False
         entry["credential_save_error"] = "missing_id_or_password"
         return False
+    if not is_search_hash_secret_configured():
+        entry["credit4u_credentials_saved"] = False
+        entry["credential_save_error"] = "PersistentStoreConfigError: REDRIBBON_SEARCH_HASH_SECRET is missing"
+        return False
     email = str(
         entry.get("credit4u_signup_email") or entry.get("credit4u_register_email") or ""
     ).strip()
+    creds_source = str(
+        creds.get("source") or entry.get("credential_source") or "generated"
+    ).strip()
+    attempt_no = int(entry.get("credit4u_id_attempt_no") or 0)
     metadata = {
-        "credential_source": str(creds.get("source") or "generated"),
+        "credential_source": creds_source,
         "credential_version": str(
             creds.get("credential_version")
             or entry.get("credential_version")
             or CREDIT4U_CREDENTIAL_VERSION
         ),
-        "credit4u_id_attempt_no": int(entry.get("credit4u_id_attempt_no") or 0),
+        "credit4u_id_attempt_no": attempt_no,
         "email": email,
         "register_completed_at": _utc_now_iso(),
     }
@@ -1358,17 +1426,27 @@ def _save_credit4u_credentials_to_store(entry: dict[str, Any]) -> bool:
         customer_key = persist_credit4u_credentials(customer, creds, metadata)
     except Exception as exc:
         entry["credit4u_credentials_saved"] = False
-        entry["credential_save_error"] = type(exc).__name__
+        entry["credential_save_error"] = _format_credential_save_error(exc)
         logger.warning(
             "credit4u_credentials save failed err=%s",
             type(exc).__name__,
         )
         return False
-    entry["credit4u_credentials_saved"] = bool(customer_key)
-    if customer_key:
-        entry["customer_key"] = customer_key
-        entry["stored_credit4u_credentials_exists"] = True
-    return bool(customer_key)
+    if not customer_key:
+        entry["credit4u_credentials_saved"] = False
+        entry["credential_save_error"] = "persist_returned_empty"
+        return False
+    if not verify_persisted_credit4u_credentials(customer, expected_id=user_id):
+        entry["credit4u_credentials_saved"] = False
+        entry["credential_save_error"] = "verify_reload_failed"
+        return False
+    entry["credit4u_credentials_saved"] = True
+    entry["stored_credit4u_credentials_exists"] = True
+    entry["customer_key"] = customer_key
+    entry["credential_version"] = metadata["credential_version"]
+    entry["credential_source"] = creds_source
+    entry["credit4u_id_attempt_no"] = attempt_no
+    return True
 
 
 def _start_contract_after_already_registered(flow_id: str, entry: dict[str, Any]) -> None:
@@ -2084,7 +2162,12 @@ def _apply_credit4u_contract_info_first_response(
 def _start_credit4u_contract_info_first(flow_id: str, entry: dict[str, Any]) -> None:
     """준비된 credit4u_credentials로 contract-info 1차 요청."""
     customer = entry.get("customer") or {}
-    _ensure_credit4u_credentials_for_entry(entry)
+    preserve_flow = _flow_has_usable_credit4u_credentials(entry)
+    block_generate = _is_credit4u_generation_blocked(entry)
+    _ensure_credit4u_credentials_for_entry(
+        entry,
+        allow_generate=not (preserve_flow or block_generate),
+    )
     credentials = entry.get("credit4u_credentials")
     if not isinstance(credentials, dict):
         raise ValueError("credit4u credentials missing")
@@ -2276,10 +2359,57 @@ def _clear_insurance_temp_fields(entry: dict[str, Any]) -> None:
     entry["credit4u_second_status"] = "idle"
 
 
-def _restore_saved_insurance_records_if_needed(entry: dict[str, Any]) -> None:
-    """SQLite에 저장된 보험 원부를 FLOW_STORE에 복원."""
+def _customer_has_stored_insurance_records(customer: dict[str, Any]) -> bool:
+    if not is_search_hash_secret_configured():
+        return False
+    saved = load_latest_insurance_records(customer)
+    if not saved:
+        return False
+    payload = saved.get("normalized_payload") or saved.get("normalized_records")
+    return bool(flatten_imported_insurance_records(payload))
+
+
+def _apply_saved_insurance_records_to_entry(
+    entry: dict[str, Any],
+    saved: dict[str, Any],
+) -> bool:
+    """저장된 insurance_records를 FLOW_STORE completed 상태로 반영."""
+    customer = entry.get("customer") or {}
+    customer_name = str(customer.get("name") or "")
+    normalized_payload = saved.get("normalized_payload") or saved.get("normalized_records")
+    display = resolve_stored_insurance_for_display(
+        normalized_payload,
+        saved.get("summary"),
+        customer_name,
+    )
+    if not display.get("insurance_records"):
+        return False
+
+    entry["insurance_status"] = "completed"
+    entry["insurance_stage"] = "completed"
+    entry["insurance_source"] = "saved_imported"
+    entry["insurance_message"] = "저장된 보험가입이력을 불러왔습니다."
+    entry["insurance_records_saved"] = True
+    entry["stored_insurance_records_exists"] = True
+    entry["loaded_insurance_record_id"] = saved.get("record_id")
+    entry["loaded_insurance_record_source"] = str(saved.get("source") or "")
+    entry["loaded_insurance_record_flow_id"] = str(saved.get("flow_id") or "")
+    entry["insurance_result_raw"] = saved.get("raw_response")
+    entry["insurance_result"] = normalized_payload
+    entry["insurance_records"] = display["insurance_records"]
+    entry["insurance_company_groups"] = display["insurance_company_groups"]
+    entry["insurance_summary"] = display["insurance_summary"]
+    entry["credit4u_second_status"] = "completed"
+    entry.pop("insurance_error_code", None)
+    return True
+
+
+def _restore_saved_insurance_records_if_needed(entry: dict[str, Any]) -> bool:
+    """SQLite에 저장된 보험 원부를 FLOW_STORE에 복원(CODEF 미호출)."""
+    if entry.get("insurance_source") == "saved_imported" and entry.get("insurance_records"):
+        return True
     if entry.get("insurance_status") == "completed" and entry.get("insurance_records"):
-        return
+        return True
     active_register_stages = {
         "register_requesting",
         "register_secure_no_required",
@@ -2290,32 +2420,23 @@ def _restore_saved_insurance_records_if_needed(entry: dict[str, Any]) -> None:
         "register_email_auth_required",
     }
     if str(entry.get("insurance_stage") or "") in active_register_stages:
-        return
+        return False
     customer = entry.get("customer") or {}
     if not is_search_hash_secret_configured():
-        return
+        return False
     saved = load_latest_insurance_records(customer)
     if not saved:
-        return
-    normalized = list(saved.get("normalized_records") or [])
-    if not normalized:
-        return
-    customer_name = str(customer.get("name") or "")
-    _, company_groups = build_insurance_company_groups(normalized, customer_name)
-    entry["insurance_status"] = "completed"
-    entry["insurance_stage"] = "completed"
-    entry["insurance_records"] = normalized
-    entry["insurance_company_groups"] = company_groups
-    entry["insurance_summary"] = saved.get("summary") or insurance_summary_from_records(
-        normalized
-    )
-    entry["insurance_message"] = "보험가입이력 수신 완료"
-    entry["insurance_records_saved"] = True
+        return False
+    return _apply_saved_insurance_records_to_entry(entry, saved)
 
 
 def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any]:
-    _ensure_credit4u_credentials_for_entry(entry)
-    _restore_saved_insurance_records_if_needed(entry)
+    restored_saved = _restore_saved_insurance_records_if_needed(entry)
+    if not restored_saved:
+        _ensure_credit4u_credentials_for_entry(
+            entry,
+            allow_generate=not _is_credit4u_generation_blocked(entry),
+        )
     status = entry.get("insurance_status") or "pending"
     customer = entry.get("customer") or {}
     summary = entry.get("insurance_summary") or {"total": 0, "insured_valid": 0, "company_count": 0}
@@ -2327,7 +2448,7 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
         stored_groups = entry.get("insurance_company_groups")
         if isinstance(stored_groups, list) and stored_groups:
             records = stored_records
-            company_groups = stored_groups
+            company_groups = prepare_insurance_company_groups_for_template(stored_groups)
         else:
             records, company_groups = build_insurance_company_groups(
                 stored_records,
@@ -2485,7 +2606,42 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
                 "예" if entry.get("already_registered_auto_contract_started") else "아니오"
             ),
             "credential_save_error": entry.get("credential_save_error") or "—",
+            "credential_loaded_from_store": (
+                "예" if entry.get("credential_loaded_from_store") else "아니오"
+            ),
+            "credential_generated_new": (
+                "예" if entry.get("credential_generated_new") else "아니오"
+            ),
+            "stored_insurance_records_exists": (
+                "예" if entry.get("stored_insurance_records_exists") else "아니오"
+            ),
+            "loaded_insurance_record_id": entry.get("loaded_insurance_record_id") or "—",
+            "loaded_insurance_record_source": (
+                entry.get("loaded_insurance_record_source") or "—"
+            ),
+            "insurance_source": str(entry.get("insurance_source") or "—"),
+            "loaded_insurance_raw_len": entry.get("loaded_insurance_raw_len") or "—",
+            "loaded_insurance_normalized_len": (
+                entry.get("loaded_insurance_normalized_len") or "—"
+            ),
+            "loaded_insurance_summary_len": (
+                entry.get("loaded_insurance_summary_len") or "—"
+            ),
         }
+    if _debug_panel() and entry.get("stored_insurance_records_exists"):
+        saved_dbg = load_latest_insurance_records(customer) if customer else None
+        if saved_dbg:
+            credit4u_debug = credit4u_debug or {}
+            credit4u_debug.update(
+                {
+                    "loaded_insurance_raw_len": saved_dbg.get("raw_len", "—"),
+                    "loaded_insurance_normalized_len": saved_dbg.get("normalized_len", "—"),
+                    "loaded_insurance_summary_len": saved_dbg.get("summary_len", "—"),
+                }
+            )
+            entry["loaded_insurance_raw_len"] = saved_dbg.get("raw_len")
+            entry["loaded_insurance_normalized_len"] = saved_dbg.get("normalized_len")
+            entry["loaded_insurance_summary_len"] = saved_dbg.get("summary_len")
     show_existing_account_section = _should_show_existing_account_section(entry)
     insurance_stage_value = str(entry.get("insurance_stage") or "")
     show_credentials_card = bool(
@@ -2516,6 +2672,13 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
         "insurance_company_groups": company_groups,
         "show_existing_account_section": show_existing_account_section,
         "show_credit4u_credentials_card": show_credentials_card,
+        "insurance_using_saved_import": entry.get("insurance_source") == "saved_imported",
+        "insurance_source_label": (
+            "저장된 보험가입이력 기준입니다."
+            if entry.get("insurance_source") == "saved_imported"
+            else ""
+        ),
+        "hide_insurance_codf_start": entry.get("insurance_source") == "saved_imported",
         "credit4u_debug": credit4u_debug,
         "credit4u_secure_no": secure_no_view,
         **creds_view,
@@ -2916,7 +3079,8 @@ def hospital_insurance_request_get(
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
     if _debug_panel() and (debug_existing or "").strip() == "1":
         entry["debug_show_existing_account"] = True
-    if (
+    _restore_saved_insurance_records_if_needed(entry)
+    if entry.get("insurance_source") != "saved_imported" and (
         entry.get("insurance_stage") == "register_completed"
         and entry.get("credit4u_register_completed")
         and not entry.get("insurance_contract_auto_started")
@@ -2938,6 +3102,10 @@ def hospital_insurance_request_start(flow_id: str | None = None):
     entry = FLOW_STORE[fid]
     if entry.get("medical_status") != "completed":
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+    customer = entry.get("customer") or {}
+    if _customer_has_stored_insurance_records(customer):
+        _restore_saved_insurance_records_if_needed(entry)
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
     manual_restart = (
         entry.get("insurance_status") == "pending"
         or entry.get("insurance_stage") == "register_completed"
@@ -3032,6 +3200,19 @@ def hospital_insurance_request_existing_account(
     }
     entry["credential_source"] = "existing_account"
     entry["credential_version"] = CREDIT4U_CREDENTIAL_VERSION
+    entry["credential_loaded_from_store"] = False
+    entry["credential_generated_new"] = False
+
+    if not _save_credit4u_credentials_to_store(entry):
+        entry["insurance_status"] = "in_progress"
+        entry["insurance_stage"] = "existing_account_required"
+        entry["credit4u_current_request_status"] = "existing_account_required"
+        entry["insurance_message"] = (
+            "기존 신용정보원 계정 저장에 실패했습니다. "
+            "아이디·비밀번호를 확인한 뒤 다시 입력해 주세요."
+        )
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
     entry["insurance_status"] = "in_progress"
     entry["credit4u_current_flow"] = "contract"
     entry["insurance_stage"] = "requesting_contract_info"
@@ -3528,6 +3709,7 @@ def hospital_analysis_ready_get(request: Request, flow_id: str | None = None):
     entry = FLOW_STORE[fid]
     if entry.get("medical_status") != "completed":
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+    _restore_saved_insurance_records_if_needed(entry)
     if entry.get("insurance_status") != "completed":
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
     return templates.TemplateResponse(
