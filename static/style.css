@@ -924,6 +924,54 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   margin-bottom: 0;
 }
 
+.hospital-hira-saved-choice {
+  margin-bottom: 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #c8e6d4;
+  background: #f3fbf6;
+}
+
+.hospital-hira-saved-choice__title {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+  text-align: center;
+  color: #0d5c36;
+}
+
+.hospital-hira-saved-choice__desc {
+  margin: 0 0 0.85rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--rr-muted);
+}
+
+.hospital-hira-saved-choice__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.hospital-hira-saved-choice__form {
+  margin: 0;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.hospital-hira-saved-choice__btn {
+  min-width: min(100%, 18rem);
+}
+
+.hospital-hira-state__lead--sub {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--rr-muted);
+}
+
 .hospital-hira-state {
   background: #fff;
   border: 1px solid var(--rr-line);
@@ -1053,8 +1101,24 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   border-bottom: none;
 }
 
-.hospital-hira-debug--page {
+.hospital-hira-debug--page,
+.hospital-hira-debug--storage {
   margin-top: 1rem;
+}
+
+.hospital-hira-debug__row--warn dd {
+  color: #9a1530;
+  font-weight: 600;
+}
+
+.hospital-hira-debug__link {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.hospital-hira-debug__link a {
+  color: #1a4d7a;
 }
 
 /* ----- 진료내역 카카오 인증 모달 ----- */
@@ -1403,6 +1467,211 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   margin-bottom: 0;
 }
 
+.hospital-insurance-notice__body {
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--rr-muted);
+}
+
+.hospital-insurance-notice__body p {
+  margin: 0 0 0.4rem;
+}
+
+.hospital-insurance-notice__body p:last-child {
+  margin-bottom: 0;
+}
+
+.hospital-insurance-customer {
+  margin-bottom: 1rem;
+}
+
+.hospital-insurance-existing {
+  margin-bottom: 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #d8e4f0;
+  background: #f7fafc;
+}
+
+.hospital-insurance-existing__title {
+  margin: 0 0 0.45rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.hospital-insurance-existing__desc,
+.hospital-insurance-existing__hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--rr-muted);
+  text-align: center;
+}
+
+.hospital-insurance-existing__hint {
+  color: #1a4d7a;
+}
+
+.hospital-insurance-existing__details {
+  margin-top: 0.5rem;
+}
+
+.hospital-insurance-existing__toggle {
+  display: flex;
+  margin: 0 auto 0.75rem;
+  list-style: none;
+  cursor: pointer;
+}
+
+.hospital-insurance-existing__toggle::-webkit-details-marker {
+  display: none;
+}
+
+.hospital-insurance-existing__form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  max-width: 22rem;
+  margin: 0 auto;
+}
+
+.hospital-insurance-existing__label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--rr-text);
+}
+
+.hospital-insurance-existing__input {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--rr-line);
+  border-radius: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.hospital-insurance-existing__submit {
+  margin-top: 0.35rem;
+}
+
+.hospital-credit4u-credentials {
+  margin-top: 1.25rem;
+  padding: 0.95rem 1rem 1rem;
+  background: #fafafa;
+  border: 1px solid rgba(196, 30, 58, 0.22);
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
+}
+
+.hospital-credit4u-credentials__title {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--rr-ink, #1a1a1a);
+}
+
+.hospital-credit4u-credentials__desc {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #555;
+}
+
+.hospital-credit4u-credentials__error {
+  margin: 0 0 0.65rem;
+}
+
+.hospital-credit4u-credentials__field {
+  margin-bottom: 0.65rem;
+}
+
+.hospital-credit4u-credentials__field:last-of-type {
+  margin-bottom: 0.35rem;
+}
+
+.hospital-credit4u-credentials__label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #444;
+}
+
+.hospital-credit4u-credentials__row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.45rem;
+}
+
+.hospital-credit4u-credentials__input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rr-line);
+  border-radius: 0.35rem;
+  font-size: 0.88rem;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  background: #fff;
+}
+
+.hospital-credit4u-credentials__toggle {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.hospital-credit4u-credentials__hint {
+  margin: 0.55rem 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: #777;
+}
+
+.hospital-credit4u-credentials__hint--rules {
+  margin-top: 0.75rem;
+  color: #666;
+}
+
+.hospital-register-signup {
+  margin-top: 0.5rem;
+}
+
+.hospital-register-signup__field {
+  margin-bottom: 0.65rem;
+}
+
+.hospital-register-signup__label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #444;
+}
+
+.hospital-register-signup__input {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rr-line);
+  border-radius: 0.35rem;
+  font-size: 0.88rem;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.hospital-insurance-debug--page {
+  margin-top: 1rem;
+}
+
+.hospital-insurance-debug__title {
+  margin: 0 0 0.6rem;
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-align: center;
+}
+
 .hospital-form-error--info {
   color: #1a4d7a;
   background: #eef6fc;
@@ -1449,6 +1718,10 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   justify-content: center;
 }
 
+.hospital-insurance-state__form--secondary {
+  margin-top: 0.5rem;
+}
+
 .hospital-insurance-state__btn {
   min-width: min(100%, 18rem);
 }
@@ -1467,36 +1740,179 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   line-height: 1.65;
 }
 
-.hospital-insurance-table-wrap {
-  overflow-x: auto;
+.hospital-insurance-companies {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 420px;
+  overflow-y: auto;
   margin-bottom: 0.75rem;
+  padding-right: 0.15rem;
+}
+
+.hospital-insurance-company-card {
   border: 1px solid var(--rr-line);
-  border-radius: 0.4rem;
+  border-radius: 0.45rem;
+  background: #fafbfc;
+  overflow: hidden;
 }
 
-.hospital-insurance-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.7rem;
-}
-
-.hospital-insurance-table th,
-.hospital-insurance-table td {
-  padding: 0.45rem 0.35rem;
+.hospital-insurance-company-card__header {
+  padding: 0.55rem 0.7rem;
+  background: #fff;
   border-bottom: 1px solid var(--rr-line);
-  text-align: left;
-  vertical-align: top;
 }
 
-.hospital-insurance-table th {
-  background: var(--rr-bg-soft);
+.hospital-insurance-company-card__title {
+  margin: 0;
+  font-size: 0.88rem;
   font-weight: 800;
+  color: var(--rr-ink);
+}
+
+.hospital-insurance-company-card__meta {
+  margin: 0.2rem 0 0;
+  font-size: 0.72rem;
+  color: var(--rr-muted);
+}
+
+.hospital-insurance-product-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hospital-insurance-product {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid #eef1f6;
+  background: #fff;
+}
+
+.hospital-insurance-product:last-child {
+  border-bottom: none;
+}
+
+.hospital-insurance-product--excluded {
+  background: #f8f9fb;
+}
+
+.hospital-insurance-product__main {
+  min-width: 0;
+  flex: 1;
+}
+
+.hospital-insurance-product__name {
+  margin: 0 0 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--rr-ink);
+  word-break: break-word;
+}
+
+.hospital-insurance-product__meta {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.45rem;
+  font-size: 0.68rem;
+  color: var(--rr-muted);
+}
+
+.hospital-insurance-product__meta span {
   white-space: nowrap;
 }
 
-.hospital-insurance-table__row--excluded {
-  background: #fafbfc;
+.hospital-insurance-product__inferred {
+  color: #6b7280;
+  font-style: italic;
+}
+
+.hospital-insurance-debug {
+  margin: 0.75rem 0 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px dashed #d0d8e4;
+  border-radius: 0.35rem;
+  background: #f8fafc;
+  text-align: left;
+}
+
+.hospital-insurance-debug__dl {
+  margin: 0;
+}
+
+.hospital-insurance-debug__row {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.hospital-insurance-debug__row dt {
+  min-width: 10rem;
   color: var(--rr-muted);
+}
+
+.hospital-insurance-debug__row dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.hospital-insurance-progress {
+  text-align: center;
+  padding: 0.5rem 0 0.75rem;
+}
+
+.hospital-insurance-progress__spinner {
+  width: 2.5rem;
+  height: 2.5rem;
+  margin: 0 auto 0.75rem;
+  border: 3px solid #eef1f6;
+  border-top-color: var(--rr-red);
+  border-radius: 50%;
+  animation: hira-modal-spin 0.75s linear infinite;
+}
+
+.hospital-insurance-secure-no {
+  margin: 0.75rem 0;
+  text-align: center;
+}
+
+.hospital-insurance-secure-no__image {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--rr-line);
+  border-radius: 0.35rem;
+  background: #fff;
+}
+
+.hospital-insurance-secure-no__form {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.hospital-insurance-secure-no__label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.hospital-insurance-secure-no__input {
+  width: 100%;
+  padding: 0.5rem 0.55rem;
+  border: 1px solid var(--rr-line);
+  border-radius: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.hospital-insurance-product__badge {
+  flex-shrink: 0;
+  padding-top: 0.05rem;
 }
 
 .hospital-insurance-badge {

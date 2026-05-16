@@ -17,6 +17,7 @@ CODEF_TOKEN_URL = "https://oauth.codef.io/oauth/token"
 DEFAULT_CODEF_BASE_URL = "https://development.codef.io"
 DEFAULT_HIRA_MEDICAL_PATH = "/v1/kr/public/hw/hira-list/my-medical-information"
 CODEF_SUCCESS_CODE = "CF-00000"
+CODEF_PASSWORD_FIELD = "password"
 
 
 class CodefClientError(Exception):
@@ -30,6 +31,70 @@ class CodefClientError(Exception):
 
 def _env_truthy(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in ("1", "true", "yes")
+
+
+def is_codef_public_key_configured() -> bool:
+    return bool((os.getenv("CODEF_PUBLIC_KEY") or "").strip())
+
+
+def codef_password_encryption_debug() -> dict[str, Any]:
+    """DEBUG용 — 비밀번호/키 원문은 포함하지 않음."""
+    configured = is_codef_public_key_configured()
+    return {
+        "password_encrypted": configured,
+        "public_key_configured": configured,
+        "password_field_name": CODEF_PASSWORD_FIELD,
+    }
+
+
+def _load_rsa_public_key(public_key_raw: str) -> Any:
+    from Crypto.PublicKey import RSA
+
+    key_text = public_key_raw.strip()
+    if "BEGIN" in key_text:
+        return RSA.import_key(key_text.encode("utf-8"))
+    try:
+        der = base64.b64decode(key_text)
+    except (ValueError, TypeError) as exc:
+        raise CodefClientError(
+            "CODEF_PUBLIC_KEY 형식이 올바르지 않습니다.",
+            code="CODEF_PASSWORD_ENCRYPTION_ERROR",
+        ) from exc
+    return RSA.import_key(der)
+
+
+def encrypt_codef_password(plain_password: str) -> str:
+    """CODEF 요청용 비밀번호 RSA(PKCS#1 v1.5) 암호화 → base64."""
+    if not plain_password:
+        raise CodefClientError(
+            "암호화할 비밀번호가 비어 있습니다.",
+            code="CODEF_PASSWORD_ENCRYPTION_ERROR",
+        )
+    public_key_raw = (os.getenv("CODEF_PUBLIC_KEY") or "").strip()
+    if not public_key_raw:
+        raise CodefClientError(
+            "CODEF_PUBLIC_KEY가 설정되지 않았습니다.",
+            code="CODEF_PASSWORD_ENCRYPTION_ERROR",
+        )
+    try:
+        from Crypto.Cipher import PKCS1_v1_5 as PKCS1
+
+        key_pub = _load_rsa_public_key(public_key_raw)
+        cipher = PKCS1.new(key_pub)
+        encrypted = cipher.encrypt(plain_password.encode("utf-8"))
+        if encrypted is None:
+            raise CodefClientError(
+                "CODEF 비밀번호 암호화에 실패했습니다.",
+                code="CODEF_PASSWORD_ENCRYPTION_ERROR",
+            )
+        return base64.b64encode(encrypted).decode("utf-8")
+    except CodefClientError:
+        raise
+    except Exception as exc:
+        raise CodefClientError(
+            "CODEF 비밀번호 암호화에 실패했습니다.",
+            code="CODEF_PASSWORD_ENCRYPTION_ERROR",
+        ) from exc
 
 
 def _codef_credentials() -> tuple[str, str]:
