@@ -334,43 +334,188 @@ def _request_hira_auth_codef(flow_id: str, entry: dict[str, Any]) -> None:
     )
 
 
-def _normalize_medical_record_row(raw: Any) -> dict[str, str]:
-    """CODEF/데모 진료내역 1건을 화면 표시용으로 정규화(민감 원문 필드명만 사용)."""
+def _pick_medical_field(raw: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = raw.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return "-"
+
+
+def _normalize_basic_medical_row(raw: Any) -> dict[str, str]:
+    """기본진료내역 1건 정규화."""
     if not isinstance(raw, dict):
         return {
             "visit_date": "-",
             "hospital_name": "-",
             "department": "-",
+            "treat_type": "-",
+            "main_diagnosis": "-",
             "diagnosis": "-",
             "copay_amount": "-",
         }
-
-    def _pick(*keys: str) -> str:
-        for key in keys:
-            value = raw.get(key)
-            if value is not None and str(value).strip():
-                return str(value).strip()
-        return "-"
-
+    main_diagnosis = _pick_medical_field(
+        raw,
+        "resMainDiseaseName",
+        "resDiseaseName",
+        "resSickName",
+        "main_disease",
+        "disease_name",
+        "diagnosis",
+    )
     return {
-        "visit_date": _pick("resTreatDate", "date", "treatment_date", "visit_date"),
-        "hospital_name": _pick("resHospitalName", "hospital_name"),
-        "department": _pick("resDepartment", "department"),
-        "diagnosis": _pick("resDiseaseName", "disease_name", "diagnosis"),
-        "copay_amount": _pick("resPaidAmount", "patient_paid_amount", "copay_amount"),
+        "visit_date": _pick_medical_field(
+            raw, "resTreatDate", "resVisitDate", "date", "treatment_date", "visit_date"
+        ),
+        "hospital_name": _pick_medical_field(
+            raw, "resHospitalName", "resInstitutionName", "hospital_name"
+        ),
+        "department": _pick_medical_field(raw, "resDepartment", "resDeptName", "department"),
+        "treat_type": _pick_medical_field(
+            raw, "resTreatType", "resTreatKind", "resCareType", "treat_type", "treatment_type"
+        ),
+        "main_diagnosis": main_diagnosis,
+        "diagnosis": main_diagnosis,
+        "copay_amount": _pick_medical_field(
+            raw, "resPaidAmount", "resSelfPayAmount", "patient_paid_amount", "copay_amount"
+        ),
     }
 
 
-def _medical_records_preview(entry: dict[str, Any], *, limit: int = 10) -> list[dict[str, str]]:
-    """basic 리스트(또는 데모 medical_records)에서 최대 limit건 미리보기."""
+def _normalize_detail_medical_row(raw: Any) -> dict[str, str]:
+    """세부진료정보 1건 정규화."""
+    if not isinstance(raw, dict):
+        return {
+            "visit_date": "-",
+            "hospital_name": "-",
+            "item_name": "-",
+            "dose": "-",
+            "frequency": "-",
+            "days": "-",
+        }
+    return {
+        "visit_date": _pick_medical_field(
+            raw, "resTreatDate", "resVisitDate", "date", "treatment_date", "visit_date"
+        ),
+        "hospital_name": _pick_medical_field(
+            raw, "resHospitalName", "resInstitutionName", "hospital_name"
+        ),
+        "item_name": _pick_medical_field(
+            raw,
+            "resItemName",
+            "resCodeName",
+            "resTreatName",
+            "resDetailName",
+            "resDetailItemName",
+            "code_name",
+            "item_name",
+        ),
+        "dose": _pick_medical_field(
+            raw, "resDosage", "resDose", "resAmount", "resDrugAmount", "dosage", "dose"
+        ),
+        "frequency": _pick_medical_field(
+            raw, "resFrequency", "resTimes", "resCount", "resDrugCount", "frequency", "times"
+        ),
+        "days": _pick_medical_field(
+            raw,
+            "resDays",
+            "resTotalDays",
+            "resMedicationDays",
+            "resDrugDays",
+            "total_days",
+            "days",
+        ),
+    }
+
+
+def _normalize_prescribe_medical_row(raw: Any) -> dict[str, str]:
+    """처방조제내역 1건 정규화."""
+    if not isinstance(raw, dict):
+        return {
+            "dispense_date": "-",
+            "pharmacy_name": "-",
+            "drug_name": "-",
+            "ingredient": "-",
+            "dose": "-",
+            "frequency": "-",
+            "days": "-",
+        }
+    return {
+        "dispense_date": _pick_medical_field(
+            raw,
+            "resPrescribeDate",
+            "resDispenseDate",
+            "resTreatDate",
+            "dispense_date",
+            "prescribe_date",
+            "visit_date",
+        ),
+        "pharmacy_name": _pick_medical_field(
+            raw,
+            "resPharmacyName",
+            "resHospitalName",
+            "resInstitutionName",
+            "pharmacy_name",
+            "hospital_name",
+        ),
+        "drug_name": _pick_medical_field(
+            raw, "resDrugName", "resMedicineName", "drug_name", "medicine_name"
+        ),
+        "ingredient": _pick_medical_field(
+            raw,
+            "resIngredientName",
+            "resComponentName",
+            "resIngrName",
+            "ingredient_name",
+            "ingredient",
+        ),
+        "dose": _pick_medical_field(
+            raw, "resDosage", "resDose", "resAmount", "resDrugAmount", "dosage", "dose"
+        ),
+        "frequency": _pick_medical_field(
+            raw, "resFrequency", "resTimes", "resCount", "resDrugCount", "frequency", "times"
+        ),
+        "days": _pick_medical_field(
+            raw,
+            "resDays",
+            "resTotalDays",
+            "resMedicationDays",
+            "resDrugDays",
+            "total_days",
+            "days",
+        ),
+    }
+
+
+def _normalize_medical_record_list(
+    raw_list: Any,
+    normalizer: Any,
+) -> list[dict[str, str]]:
+    if not isinstance(raw_list, list):
+        return []
+    return [normalizer(row) for row in raw_list]
+
+
+def _medical_records_basic_all(entry: dict[str, Any]) -> list[dict[str, str]]:
     raw_list = entry.get("medical_records_basic")
     if not isinstance(raw_list, list) or not raw_list:
         fallback = entry.get("medical_records")
         raw_list = fallback if isinstance(fallback, list) else []
-    preview: list[dict[str, str]] = []
-    for raw in raw_list[:limit]:
-        preview.append(_normalize_medical_record_row(raw))
-    return preview
+    return _normalize_medical_record_list(raw_list, _normalize_basic_medical_row)
+
+
+def _medical_records_detail_all(entry: dict[str, Any]) -> list[dict[str, str]]:
+    return _normalize_medical_record_list(
+        entry.get("medical_records_detail"),
+        _normalize_detail_medical_row,
+    )
+
+
+def _medical_records_prescribe_all(entry: dict[str, Any]) -> list[dict[str, str]]:
+    return _normalize_medical_record_list(
+        entry.get("medical_records_prescribe"),
+        _normalize_prescribe_medical_row,
+    )
 
 
 def _build_customer_display(customer: dict[str, Any]) -> dict[str, str]:
@@ -700,9 +845,13 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
     customer = entry.get("customer") or {}
     customer_display = _build_customer_display(customer)
     counts = entry.get("medical_result_counts") or {"basic": 0, "detail": 0, "prescribe": 0}
-    records_preview: list[dict[str, str]] = []
+    basic_all: list[dict[str, str]] = []
+    detail_all: list[dict[str, str]] = []
+    prescribe_all: list[dict[str, str]] = []
     if status == "completed":
-        records_preview = _medical_records_preview(entry, limit=10)
+        basic_all = _medical_records_basic_all(entry)
+        detail_all = _medical_records_detail_all(entry)
+        prescribe_all = _medical_records_prescribe_all(entry)
     show_hira_modal, hira_modal_step = _hira_modal_context(entry)
 
     return templates.TemplateResponse(
@@ -716,8 +865,10 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
             "medical_status": status,
             "medical_message": entry.get("medical_message"),
             "medical_result_counts": counts,
-            "medical_records": records_preview,
-            "medical_records_preview": records_preview,
+            "medical_records": basic_all[:10],
+            "medical_records_basic_all": basic_all,
+            "medical_records_detail_all": detail_all,
+            "medical_records_prescribe_all": prescribe_all,
             "codef_debug": _hira_codef_debug_context(entry),
             "show_hira_modal": show_hira_modal,
             "hira_modal_step": hira_modal_step,

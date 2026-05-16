@@ -9,6 +9,25 @@
   var resultPanel = document.getElementById("hira-modal-result-panel");
   var initialStep = modal.getAttribute("data-initial-step") || "intro";
   var openOnLoad = modal.getAttribute("data-open-on-load") === "true";
+  var defaultMedicalTab = "basic";
+
+  function activateMedicalTab(tabId) {
+    if (!resultPanel) return;
+    var tabs = resultPanel.querySelectorAll("[data-medical-tab]");
+    var panels = resultPanel.querySelectorAll("[data-medical-tab-panel]");
+    for (var i = 0; i < tabs.length; i++) {
+      var tab = tabs[i];
+      var active = tab.getAttribute("data-medical-tab") === tabId;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    for (var j = 0; j < panels.length; j++) {
+      var panel = panels[j];
+      var panelActive = panel.getAttribute("data-medical-tab-panel") === tabId;
+      panel.classList.toggle("is-active", panelActive);
+      panel.hidden = !panelActive;
+    }
+  }
 
   function resetMedicalResultPanel() {
     if (!resultPanel) return;
@@ -17,6 +36,7 @@
     if (dialog) {
       dialog.classList.remove("hira-modal__dialog--expanded");
     }
+    activateMedicalTab(defaultMedicalTab);
     var showBtn = modal.querySelector('[data-action="show-medical-result"]');
     if (showBtn) {
       showBtn.disabled = false;
@@ -32,6 +52,7 @@
     if (dialog) {
       dialog.classList.add("hira-modal__dialog--expanded");
     }
+    activateMedicalTab(defaultMedicalTab);
     var showBtn = modal.querySelector('[data-action="show-medical-result"]');
     if (showBtn) {
       showBtn.disabled = true;
@@ -89,6 +110,19 @@
       e.preventDefault();
       showMedicalResultPanel();
     });
+  }
+
+  if (resultPanel) {
+    var medicalTabButtons = resultPanel.querySelectorAll("[data-medical-tab]");
+    for (var n = 0; n < medicalTabButtons.length; n++) {
+      medicalTabButtons[n].addEventListener("click", function (e) {
+        e.preventDefault();
+        var tabId = e.currentTarget.getAttribute("data-medical-tab");
+        if (tabId) {
+          activateMedicalTab(tabId);
+        }
+      });
+    }
   }
 
   var backdrop = modal.querySelector(".hira-modal__backdrop");

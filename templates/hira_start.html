@@ -231,35 +231,124 @@
           <button type="button" class="btn btn--ghost hira-modal__btn" data-close-hira-modal>닫기</button>
         </div>
         <div class="hira-modal-result-panel" id="hira-modal-result-panel" hidden>
-          <h3 class="hira-modal-result-panel__title">진료내역 샘플 (최대 10건)</h3>
-          {% if medical_records_preview %}
-          <div class="hira-modal-result-panel__table-wrap">
-            <table class="hira-modal-result-panel__table">
-              <thead>
-                <tr>
-                  <th scope="col">진료일자</th>
-                  <th scope="col">병원명</th>
-                  <th scope="col">진료과</th>
-                  <th scope="col">상병명</th>
-                  <th scope="col">본인부담금</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in medical_records_preview %}
-                <tr>
-                  <td>{{ row.visit_date }}</td>
-                  <td>{{ row.hospital_name }}</td>
-                  <td>{{ row.department }}</td>
-                  <td>{{ row.diagnosis }}</td>
-                  <td>{{ row.copay_amount }}</td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+          <h3 class="hira-modal-result-panel__title">진료내역 전체 결과</h3>
+          <div class="hira-medical-tabs" role="tablist" aria-label="진료내역 유형">
+            <button type="button" class="hira-medical-tabs__btn is-active" role="tab" aria-selected="true" data-medical-tab="basic" id="hira-tab-basic">
+              기본진료내역 {{ medical_result_counts.basic }}건
+            </button>
+            <button type="button" class="hira-medical-tabs__btn" role="tab" aria-selected="false" data-medical-tab="detail" id="hira-tab-detail">
+              세부진료정보 {{ medical_result_counts.detail }}건
+            </button>
+            <button type="button" class="hira-medical-tabs__btn" role="tab" aria-selected="false" data-medical-tab="prescribe" id="hira-tab-prescribe">
+              처방조제내역 {{ medical_result_counts.prescribe }}건
+            </button>
           </div>
-          {% else %}
-          <p class="hira-modal-result-panel__empty">표시할 진료내역 샘플이 없습니다.</p>
-          {% endif %}
+          <div class="hira-medical-tabs__body">
+            <div class="hira-medical-tabs__panel is-active" data-medical-tab-panel="basic" role="tabpanel" aria-labelledby="hira-tab-basic">
+              {% if medical_records_basic_all %}
+              <div class="hira-medical-tabs__scroll">
+                <div class="hira-medical-tabs__table-wrap">
+                  <table class="hira-medical-tabs__table">
+                    <thead>
+                      <tr>
+                        <th scope="col">진료일자</th>
+                        <th scope="col">병원명</th>
+                        <th scope="col">진료과</th>
+                        <th scope="col">진료형태</th>
+                        <th scope="col">주상병명</th>
+                        <th scope="col">본인부담금</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for row in medical_records_basic_all %}
+                      <tr>
+                        <td>{{ row.visit_date }}</td>
+                        <td>{{ row.hospital_name }}</td>
+                        <td>{{ row.department }}</td>
+                        <td>{{ row.treat_type }}</td>
+                        <td>{{ row.main_diagnosis }}</td>
+                        <td>{{ row.copay_amount }}</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              {% else %}
+              <p class="hira-modal-result-panel__empty">표시할 기본진료내역이 없습니다.</p>
+              {% endif %}
+            </div>
+            <div class="hira-medical-tabs__panel" data-medical-tab-panel="detail" role="tabpanel" aria-labelledby="hira-tab-detail" hidden>
+              {% if medical_records_detail_all %}
+              <div class="hira-medical-tabs__scroll">
+                <div class="hira-medical-tabs__table-wrap">
+                  <table class="hira-medical-tabs__table">
+                    <thead>
+                      <tr>
+                        <th scope="col">진료일자</th>
+                        <th scope="col">병원명</th>
+                        <th scope="col">코드명/항목명</th>
+                        <th scope="col">투약량</th>
+                        <th scope="col">투여횟수</th>
+                        <th scope="col">총투약일수</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for row in medical_records_detail_all %}
+                      <tr>
+                        <td>{{ row.visit_date }}</td>
+                        <td>{{ row.hospital_name }}</td>
+                        <td>{{ row.item_name }}</td>
+                        <td>{{ row.dose }}</td>
+                        <td>{{ row.frequency }}</td>
+                        <td>{{ row.days }}</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              {% else %}
+              <p class="hira-modal-result-panel__empty">표시할 세부진료정보가 없습니다.</p>
+              {% endif %}
+            </div>
+            <div class="hira-medical-tabs__panel" data-medical-tab-panel="prescribe" role="tabpanel" aria-labelledby="hira-tab-prescribe" hidden>
+              {% if medical_records_prescribe_all %}
+              <div class="hira-medical-tabs__scroll">
+                <div class="hira-medical-tabs__table-wrap">
+                  <table class="hira-medical-tabs__table">
+                    <thead>
+                      <tr>
+                        <th scope="col">조제일자</th>
+                        <th scope="col">병원/약국명</th>
+                        <th scope="col">약품명</th>
+                        <th scope="col">성분명</th>
+                        <th scope="col">투약량</th>
+                        <th scope="col">투여횟수</th>
+                        <th scope="col">총투약일수</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for row in medical_records_prescribe_all %}
+                      <tr>
+                        <td>{{ row.dispense_date }}</td>
+                        <td>{{ row.pharmacy_name }}</td>
+                        <td>{{ row.drug_name }}</td>
+                        <td>{{ row.ingredient }}</td>
+                        <td>{{ row.dose }}</td>
+                        <td>{{ row.frequency }}</td>
+                        <td>{{ row.days }}</td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              {% else %}
+              <p class="hira-modal-result-panel__empty">표시할 처방조제내역이 없습니다.</p>
+              {% endif %}
+            </div>
+          </div>
         </div>
       </div>
 
