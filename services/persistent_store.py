@@ -88,15 +88,35 @@ def _is_hospital_label_not_customer(name: str, hospital_name: str = "") -> bool:
     return False
 
 
+def _format_amount_display(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (int, float)):
+        amount = int(value)
+        return f"{amount:,}원" if amount > 0 else ""
+    digits = re.sub(r"\D", "", str(value))
+    if digits:
+        try:
+            return f"{int(digits):,}원"
+        except ValueError:
+            return ""
+    return ""
+
+
 def enrich_operator_received_document_for_display(
     doc: dict[str, Any],
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """수신문서함: 병원명·고객 연결·수신 시각 표시 필드 정리."""
+    """수신문서함: OCR·매칭 결과 표시 필드 정리."""
     meta = metadata if metadata is not None else _parse_received_document_metadata(
         doc.get("metadata_json")
     )
-    hospital_name = str(meta.get("hospital_name") or "").strip()
+    ocr = meta.get("ocr") if isinstance(meta.get("ocr"), dict) else {}
+    match = meta.get("match") if isinstance(meta.get("match"), dict) else {}
+
+    hospital_name = str(
+        ocr.get("hospital_name") or meta.get("hospital_name") or ""
+    ).strip()
     linked_name = str(doc.get("linked_customer_name") or "").strip()
     if linked_name == "—":
         linked_name = ""
@@ -106,15 +126,18 @@ def enrich_operator_received_document_for_display(
         linked_name = ""
 
     customer_key = doc.get("customer_key")
-    if customer_key:
-        if linked_name and not _is_hospital_label_not_customer(linked_name, hospital_name):
-            customer_label = linked_name
-        else:
-            customer_label = "고객"
+    match_status = str(match.get("match_status") or "").strip()
+    matched_fields = match.get("matched_fields") if isinstance(match.get("matched_fields"), list) else []
+
+    if match_status == "auto_matched" and customer_key:
+        customer_label = linked_name or str(ocr.get("patient_name") or "") or "고객"
         customer_link_linked = True
-    elif linked_name and not _is_hospital_label_not_customer(linked_name, hospital_name):
+    elif match_status == "review_required":
         customer_label = "고객 확인 필요"
         customer_link_linked = False
+    elif customer_key and linked_name:
+        customer_label = linked_name
+        customer_link_linked = True
     else:
         customer_label = "미연결"
         customer_link_linked = False
@@ -126,10 +149,34 @@ def enrich_operator_received_document_for_display(
         )
         doc["received_at"] = received_at
 
+    visit_dates = ocr.get("visit_dates") if isinstance(ocr.get("visit_dates"), list) else []
+    amounts = ocr.get("amounts") if isinstance(ocr.get("amounts"), dict) else {}
+    amount_parts: list[str] = []
+    total_disp = _format_amount_display(amounts.get("total_amount"))
+    self_disp = _format_amount_display(amounts.get("self_pay_amount"))
+    paid_disp = _format_amount_display(amounts.get("paid_amount"))
+    if total_disp:
+        amount_parts.append(f"총액 {total_disp}")
+    if self_disp:
+        amount_parts.append(f"본인부담 {self_disp}")
+    if paid_disp:
+        amount_parts.append(f"납부 {paid_disp}")
+
+    if matched_fields:
+        match_basis = "+".join(str(f) for f in matched_fields) + " 일치"
+    else:
+        match_basis = "—"
+
+    doc["metadata"] = meta
     doc["hospital_name_display"] = hospital_name or "—"
     doc["customer_link_label"] = customer_label
     doc["customer_link_linked"] = customer_link_linked
     doc["received_at_display"] = format_received_at_kst(received_at)
+    doc["visit_dates_display"] = ", ".join(str(d) for d in visit_dates) if visit_dates else "—"
+    doc["amounts_display"] = " · ".join(amount_parts) if amount_parts else "—"
+    doc["match_basis_display"] = match_basis
+    doc["ocr_match_status"] = match_status or "—"
+    doc["ocr_patient_name_display"] = str(ocr.get("patient_name") or "").strip() or "—"
     return doc
 
 
@@ -1206,6 +1253,69 @@ def upsert_operator_received_document(
         conn.close()
 
 
+def list_customer_match_targets(*, limit: int = 500) -> list[dict[str, Any]]:
+    """OCR 고객 매칭용(이름·해시; 주민·전화 원문 미포함)."""
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            """
+            SELECT customer_key, name, identity_hash, phone_hash
+            FROM customers
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 1000)),),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "customer_key": str(row[0]),
+            "name": str(row[1] or "").strip(),
+            "identity_hash": str(row[2] or ""),
+            "phone_hash": str(row[3] or ""),
+            "identity_digits": "",
+            "phone_digits": "",
+        }
+        for row in rows
+    ]
+
+
+def update_operator_received_document_ocr(
+    document_id: int,
+    *,
+    metadata_json: dict[str, Any],
+    ocr_status: str = "completed",
+    customer_key: str | None = None,
+    linked_customer_name: str = "",
+) -> None:
+    """OCR·매칭 결과 반영."""
+    _ensure_db_schema()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            UPDATE operator_received_documents
+            SET metadata_json = ?,
+                ocr_status = ?,
+                customer_key = ?,
+                linked_customer_name = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(metadata_json, ensure_ascii=False),
+                str(ocr_status or "completed").strip(),
+                str(customer_key or "").strip() or None,
+                str(linked_customer_name or "").strip(),
+                int(document_id),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def seed_operator_received_documents_if_empty() -> int:
     """데모용 수신문서가 없으면 샘플 1건 삽입."""
     _ensure_db_schema()
@@ -1235,7 +1345,19 @@ def seed_operator_received_documents_if_empty() -> int:
                 "patient_name": name,
                 "hospital_name": "시연용 종합병원 A",
                 "visit_dates": ["2025-11-02"],
-                "document_type": "진료비영수증",
+                "amounts": {
+                    "total_amount": 15600,
+                    "self_pay_amount": 15600,
+                    "paid_amount": 15600,
+                },
+                "phone_number_masked": "010****5678",
+                "rrn_masked": "900101-*******",
+            },
+            "match": {
+                "match_score": 2,
+                "matched_fields": ["이름", "주민번호(생년월일)"],
+                "match_status": "auto_matched",
+                "matched_customer_key": ck,
             },
         },
     )

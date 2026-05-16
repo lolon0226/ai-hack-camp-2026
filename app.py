@@ -2909,7 +2909,29 @@ async def api_print_receiver_upload(
         customer_key=(customer_key or "").strip() or None,
         linked_customer_name=(linked_customer_name or "").strip(),
     )
+    if not reg.get("duplicate"):
+        from services.received_pdf_match import apply_received_pdf_ocr_and_match
+
+        apply_received_pdf_ocr_and_match(
+            int(reg.get("document_id") or 0),
+            pdf_path=stored_path,
+            filename=filename,
+            hospital_name=(hospital_name or "").strip(),
+            document_type_candidate="",
+            flow_store=FLOW_STORE,
+            extra_metadata={
+                "source": "print_receiver",
+                "hospital_name": (hospital_name or "").strip(),
+                "printer_name": (printer_name or "").strip(),
+                "original_filename": filename,
+                "sha256": digest,
+            },
+        )
     doc = reg.get("document") or {}
+    if not reg.get("duplicate"):
+        refreshed = get_received_document_by_id(int(reg.get("document_id") or 0))
+        if refreshed:
+            doc = refreshed
     return JSONResponse(
         {
             "ok": True,

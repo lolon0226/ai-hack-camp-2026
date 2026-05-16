@@ -44,6 +44,9 @@
               <th scope="col">고객 연결</th>
               <th scope="col">OCR</th>
               <th scope="col">문서종류 후보</th>
+              <th scope="col">진료일</th>
+              <th scope="col">금액</th>
+              <th scope="col">매칭근거</th>
               <th scope="col">파일</th>
               <th scope="col">수신 시각</th>
             </tr>
@@ -62,6 +65,9 @@
               </td>
               <td><span class="operator-pill operator-pill--{{ doc.ocr_status }}">{{ doc.ocr_status }}</span></td>
               <td>{{ doc.document_type_candidate }}</td>
+              <td>{{ doc.visit_dates_display }}</td>
+              <td>{{ doc.amounts_display }}</td>
+              <td>{{ doc.match_basis_display }}</td>
               <td>
                 {% if doc.file_url %}
                 <a href="{{ doc.file_url }}" target="_blank" rel="noopener">보기</a>

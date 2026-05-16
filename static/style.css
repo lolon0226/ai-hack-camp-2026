@@ -712,6 +712,10 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   color: var(--rr-text, #1a1f2e);
 }
 
+.printer-download-actions .btn--primary {
+  margin-right: 0.5rem;
+}
+
 .printer-download-actions {
   display: flex;
   flex-wrap: wrap;
