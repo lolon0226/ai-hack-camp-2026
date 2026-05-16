@@ -762,6 +762,46 @@ def _medical_records_prescribe_all(entry: dict[str, Any]) -> list[dict[str, str]
     )
 
 
+def _ensure_medical_records_loaded(flow_id: str, entry: dict[str, Any]) -> bool:
+    """FLOW_STORE → DB 저장본 순으로 진료내역 로드(CODEF 미호출)."""
+    if entry.get("medical_status") == "completed":
+        basic = entry.get("medical_records_basic") or entry.get("medical_records")
+        if isinstance(basic, list) and basic:
+            return True
+    _apply_saved_medical_records(flow_id, entry)
+    if entry.get("medical_status") != "completed":
+        return False
+    basic = entry.get("medical_records_basic") or entry.get("medical_records")
+    return isinstance(basic, list) and bool(basic)
+
+
+def _medical_records_view_context(entry: dict[str, Any]) -> dict[str, Any]:
+    counts = entry.get("medical_result_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    basic_all = _medical_records_basic_all(entry)
+    detail_all = _medical_records_detail_all(entry)
+    prescribe_all = _medical_records_prescribe_all(entry)
+    counts = {
+        "basic": int(counts.get("basic") or len(basic_all)),
+        "detail": int(counts.get("detail") or len(detail_all)),
+        "prescribe": int(counts.get("prescribe") or len(prescribe_all)),
+    }
+    source = str(entry.get("medical_records_source") or "saved")
+    note = (
+        "저장된 진료내역 기준입니다."
+        if source.startswith("saved") or entry.get("loaded_medical_record_id")
+        else ""
+    )
+    return {
+        "medical_result_counts": counts,
+        "medical_records_basic_all": basic_all,
+        "medical_records_detail_all": detail_all,
+        "medical_records_prescribe_all": prescribe_all,
+        "medical_source_note": note,
+    }
+
+
 def _build_customer_display(customer: dict[str, Any]) -> dict[str, str]:
     auth = (customer.get("auth_method") or "").strip().lower()
     label = "카카오톡 간편인증" if auth == "kakao" else "본인인증"
@@ -2881,10 +2921,14 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
     basic_all: list[dict[str, str]] = []
     detail_all: list[dict[str, str]] = []
     prescribe_all: list[dict[str, str]] = []
+    medical_view: dict[str, Any] = {}
     if status == "completed":
-        basic_all = _medical_records_basic_all(entry)
-        detail_all = _medical_records_detail_all(entry)
-        prescribe_all = _medical_records_prescribe_all(entry)
+        _ensure_medical_records_loaded(fid, entry)
+        medical_view = _medical_records_view_context(entry)
+        basic_all = medical_view["medical_records_basic_all"]
+        detail_all = medical_view["medical_records_detail_all"]
+        prescribe_all = medical_view["medical_records_prescribe_all"]
+        counts = medical_view["medical_result_counts"]
     show_hira_modal, hira_modal_step = _hira_modal_context(entry)
     customer_norm = _normalize_stored_customer(customer) if customer else {}
     if customer_norm:
@@ -3783,6 +3827,26 @@ def hospital_rebuild_insurance_summary_post(
         if saved:
             _apply_saved_insurance_records_to_entry(entry, saved)
     return RedirectResponse(f"/hospital/analysis-ready?flow_id={fid}", status_code=303)
+
+
+@app.get("/hospital/medical-records/full", response_class=HTMLResponse)
+def hospital_medical_records_full(request: Request, flow_id: str | None = None):
+    """진료내역 전체보기 — 저장본만 사용(CODEF 미호출)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if not _ensure_medical_records_loaded(fid, entry):
+        return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "medical_records_full.html",
+        {
+            "flow_id": fid,
+            "current_step": 5,
+            **_medical_records_view_context(entry),
+        },
+    )
 
 
 @app.get("/hospital/analysis-ready", response_class=HTMLResponse)

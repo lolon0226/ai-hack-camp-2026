@@ -101,33 +101,20 @@
         <li>세부진료정보 <strong>{{ medical_result_counts.detail }}</strong>건</li>
         <li>처방조제내역 <strong>{{ medical_result_counts.prescribe }}</strong>건</li>
       </ul>
-      {% if medical_records %}
-      <div class="hospital-hira-table-wrap">
-        <table class="hospital-hira-table">
-          <caption class="visually-hidden">수신된 진료내역 샘플</caption>
-          <thead>
-            <tr>
-              <th scope="col">병원명</th>
-              <th scope="col">진료일자</th>
-              <th scope="col">진료과</th>
-              <th scope="col">상병명</th>
-              <th scope="col">본인부담금</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in medical_records %}
-            <tr>
-              <td>{{ row.hospital_name }}</td>
-              <td>{{ row.visit_date }}</td>
-              <td>{{ row.department }}</td>
-              <td>{{ row.diagnosis }}</td>
-              <td>{{ row.copay_amount }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+      <p class="hospital-hira-state__next">
+        <button
+          type="button"
+          class="btn btn--ghost hospital-hira-state__btn toggle-panel-btn"
+          data-toggle-target="hira-page-results-panel"
+          data-open-text="진료내역 결과 보기"
+          data-close-text="진료내역 결과 접기"
+          aria-expanded="false"
+          aria-controls="hira-page-results-panel"
+        >진료내역 결과 보기</button>
+      </p>
+      <div id="hira-page-results-panel" class="toggle-panel hira-page-results-panel" hidden>
+        {% include "partials/medical_records_full_tables.html" %}
       </div>
-      {% endif %}
       <p class="hospital-hira-state__next">
         <a class="btn btn--primary hospital-hira-state__btn" href="/hospital/insurance-request?flow_id={{ flow_id }}">보험가입이력 가져오기</a>
       </p>
@@ -422,6 +409,8 @@
   {% if show_credit4u_credentials_card %}
   <script src="/static/insurance_request.js"></script>
   {% endif %}
+  <script src="/static/medical_records_full.js" defer></script>
+  <script src="/static/hira_page_results.js" defer></script>
   <script src="/static/hira_modal.js"></script>
 </body>
 </html>

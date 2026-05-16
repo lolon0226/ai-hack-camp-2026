@@ -1796,6 +1796,10 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   text-align: center;
 }
 
+.hospital-insurance-state__next--top {
+  margin: 0.5rem 0 0.25rem;
+}
+
 .hospital-insurance-completed {
   display: flex;
   flex-direction: column;
@@ -2288,6 +2292,132 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   gap: 0.45rem;
 }
 
+.analysis-card__actions--primary {
+  margin-bottom: 0;
+}
+
+.toggle-panel {
+  margin-top: 20px;
+}
+
+.toggle-panel[hidden] {
+  display: none;
+}
+
+.toggle-panel__meta {
+  margin: 0 0 0.65rem;
+  font-size: 0.8rem;
+  color: var(--rr-muted);
+  line-height: 1.45;
+}
+
+.toggle-panel__meta-hint {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.74rem;
+}
+
+.toggle-panel__empty {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  font-size: 0.82rem;
+  color: var(--rr-muted);
+  background: #f8fafc;
+  border: 1px dashed #e5e7eb;
+  border-radius: 12px;
+}
+
+.toggle-panel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 12px 24px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.medical-preview-table-wrap {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.medical-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+
+.medical-preview-table th,
+.medical-preview-table td {
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid #eef1f6;
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.medical-preview-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  font-weight: 700;
+  color: #475569;
+}
+
+.medical-preview-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.medical-records-full-page .medical-records-full-main {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 1rem 1.25rem 2rem;
+}
+
+.medical-records-full-hero {
+  margin-bottom: 1rem;
+}
+
+.medical-records-full-hero__title {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.medical-records-full-hero__lead,
+.medical-records-full-hero__note {
+  margin: 0.25rem 0 0;
+  font-size: 0.84rem;
+  color: var(--rr-muted);
+  line-height: 1.45;
+}
+
+.medical-records-full__scroll {
+  max-height: min(70vh, 720px);
+}
+
+.medical-records-full-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.hira-page-results-panel {
+  margin-top: 0.75rem;
+}
+
+.insurance-preview-panel {
+  display: grid;
+  gap: 18px;
+}
+
 .analysis-section__title {
   margin: 0 0 0.75rem;
   font-size: 1.05rem;
@@ -2338,6 +2468,8 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   border-radius: 0.45rem;
   background: #fafbfc;
   padding: 0.75rem 0.85rem;
+  overflow: visible;
+  min-height: 0;
 }
 
 .insurance-product-card__head {
@@ -2391,39 +2523,96 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   word-break: break-word;
 }
 
-.insurance-product-card__coverages,
-.coverage-details {
-  margin-top: 0.55rem;
-  font-size: 0.78rem;
+.product-meta {
+  margin: 0;
 }
 
-.insurance-product-card__coverages summary,
-.coverage-details summary {
+.product-meta .insurance-product-card__head {
+  margin-bottom: 0.5rem;
+}
+
+.coverage-details {
+  margin-top: 16px;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 12px;
+}
+
+.coverage-summary-button {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   cursor: pointer;
   font-weight: 700;
-  color: var(--rr-red-dark);
+  color: #0f172a;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px 14px;
+  list-style: none;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.coverage-summary-button::-webkit-details-marker {
+  display: none;
+}
+
+.coverage-details[open] .coverage-summary-button {
+  margin-bottom: 12px;
 }
 
 .coverage-list {
+  display: grid;
+  gap: 10px;
   max-height: 360px;
   overflow-y: auto;
-  margin-top: 0.45rem;
+  overflow-x: visible;
+  padding-right: 4px;
 }
 
-.coverage-table {
-  width: 100%;
-  font-size: 0.74rem;
+.coverage-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fff;
 }
 
-.hospital-insurance-product__coverages {
-  margin-top: 0.5rem;
+.coverage-item__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.4;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.coverage-item__facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem 0.65rem;
   font-size: 0.76rem;
 }
 
-.hospital-insurance-product__coverages summary {
-  cursor: pointer;
+.coverage-item__facts dt {
+  margin: 0;
   font-weight: 700;
-  color: var(--rr-red-dark);
+  color: #6b7280;
+}
+
+.coverage-item__facts dd {
+  margin: 0.1rem 0 0;
+  color: var(--rr-ink);
+  word-break: break-word;
+}
+
+.hospital-insurance-product-list.insurance-product-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.65rem 0.75rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
 }
 
 .insurance-product-card__more {
@@ -2489,39 +2678,156 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   background: #fff;
 }
 
+.ai-amount-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.ai-summary-card__hint {
+  margin: 0 0 0.35rem;
+  font-size: 0.74rem;
+  color: var(--rr-muted);
+  line-height: 1.4;
+}
+
+.ai-summary-card--secondary {
+  background: #f8fafc;
+}
+
+.ai-summary-card__value--muted {
+  font-size: 1rem;
+  color: #6b7280;
+}
+
+.ai-amount-breakdown {
+  margin: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.ai-amount-breakdown dt {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #6b7280;
+}
+
+.ai-amount-breakdown dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.78rem;
+  color: var(--rr-ink);
+}
+
+.ai-candidate-head__type {
+  color: #6b7280;
+  font-size: 0.74rem;
+}
+
+.hospital-insurance-debug__row--block dd {
+  display: block;
+  margin-top: 0.35rem;
+}
+
+.ai-debug-product-list {
+  margin: 0;
+  padding-left: 1rem;
+  font-size: 0.76rem;
+}
+
+.ai-debug-product-list li {
+  margin-bottom: 0.4rem;
+}
+
 .ai-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.65rem;
+}
+
+.analysis-meta-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.analysis-meta-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+}
+
+.analysis-meta-list span:first-child {
+  font-weight: 700;
+  color: #6b7280;
+}
+
+.analysis-meta-list__debug {
+  font-size: 0.74rem;
+  color: var(--rr-muted);
+}
+
+.analysis-meta-list__note {
+  color: #6b7280;
 }
 
 .ai-category-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 0.85rem;
+  gap: 10px;
+  margin: 20px 0;
 }
 
 .ai-category-tab {
-  border: 1px solid var(--rr-line);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: 1px solid #d1d5db;
+  border-radius: 14px;
+  padding: 10px 14px;
   background: #fff;
-  color: var(--rr-ink);
-  border-radius: 999px;
-  padding: 0.4rem 0.8rem;
-  font-size: 0.76rem;
-  font-weight: 700;
-  cursor: pointer;
+  font-size: 0.78rem;
   line-height: 1.35;
+  cursor: pointer;
+  color: var(--rr-ink);
   text-align: left;
 }
 
-.ai-category-tab.active {
-  background: var(--rr-red);
-  border-color: var(--rr-red);
-  color: #fff;
+.ai-category-tab__title {
+  font-weight: 700;
 }
 
-.ai-category-panel {
+.ai-category-tab__estimated {
+  font-weight: 700;
+  color: #c9153d;
+}
+
+.ai-category-tab__base {
+  font-weight: 500;
+  font-size: 0.72rem;
+  color: #6b7280;
+}
+
+.ai-category-tab.active {
+  border-color: #c9153d;
+  background: #fff5f7;
+  color: #c9153d;
+}
+
+.ai-category-tab.active .ai-category-tab__estimated {
+  color: #a01030;
+}
+
+.ai-category-tab.active .ai-category-tab__base {
+  color: #6b4b52;
+}
+
+.ai-category-panel[hidden] {
   display: none;
 }
 
@@ -2529,85 +2835,151 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   display: block;
 }
 
+.ai-candidate-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+  background: #fff;
+}
+
 .ai-candidate-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
+  gap: 16px;
+  align-items: center;
   margin-bottom: 0.35rem;
 }
 
 .ai-candidate-head__date {
-  margin: 0 0 0.15rem;
-  font-size: 0.72rem;
-  color: var(--rr-muted);
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+.ai-candidate-head__center {
+  min-width: 0;
 }
 
 .ai-candidate-head__title {
   margin: 0;
   font-size: 0.92rem;
   font-weight: 800;
-  line-height: 1.35;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .ai-candidate-head__sub {
-  margin: 0.2rem 0 0;
-  font-size: 0.78rem;
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
   color: #4b5563;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.ai-candidate-head__dept {
+  color: #6b7280;
 }
 
 .ai-candidate-amount {
   margin: 0;
-  flex-shrink: 0;
-  font-size: 0.95rem;
   font-weight: 800;
-  color: var(--rr-red-dark);
-  text-align: right;
+  color: #0066cc;
   white-space: nowrap;
+  font-size: 0.88rem;
+  text-align: right;
 }
 
-.ai-candidate-detail summary {
+.ai-candidate-detail {
+  margin-top: 0.5rem;
+}
+
+.ai-candidate-detail__summary {
   cursor: pointer;
   font-weight: 700;
-  font-size: 0.78rem;
-  color: var(--rr-red-dark);
+  font-size: 0.8rem;
+  color: #c9153d;
+  list-style: none;
+}
+
+.ai-candidate-detail__summary::-webkit-details-marker {
+  display: none;
 }
 
 .ai-detail-box {
-  margin-top: 0.5rem;
-  padding: 0.65rem 0.75rem;
-  border-radius: 0.4rem;
-  background: #f8fafc;
-  border: 1px solid #e8edf4;
+  margin-top: 12px;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 12px;
   font-size: 0.78rem;
   line-height: 1.5;
 }
 
-.ai-detail-box__title {
-  margin: 0.65rem 0 0.25rem;
-  font-size: 0.75rem;
-  font-weight: 800;
-  color: var(--rr-ink);
+.ai-detail-section + .ai-detail-section {
+  margin-top: 0.85rem;
 }
 
-.ai-detail-box__title:first-child {
-  margin-top: 0;
+.ai-detail-box__title {
+  margin: 0 0 0.35rem;
+  font-size: 0.76rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.ai-detail-box__text {
+  margin: 0;
+  color: #334155;
+}
+
+.ai-related-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.ai-related-card {
+  border: 1px solid #e8edf4;
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: #f8fafc;
+}
+
+.ai-related-card--placeholder {
+  border-style: dashed;
+  background: #fff;
+}
+
+.ai-related-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem 0.55rem;
+}
+
+.ai-related-facts dt {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #6b7280;
+}
+
+.ai-related-facts dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.76rem;
+  word-break: break-word;
+}
+
+.ai-detail-docs {
+  margin: 0;
+  padding-left: 1.1rem;
 }
 
 .ai-detail-muted {
   color: var(--rr-muted);
   font-size: 0.72rem;
-}
-
-.related-insurance-list,
-.related-medical-list {
-  margin: 0.25rem 0 0;
-  padding-left: 1.1rem;
-}
-
-.related-insurance-list li,
-.related-medical-list li {
-  margin-bottom: 0.35rem;
 }
 
 .analysis-nav__form {
@@ -2679,11 +3051,8 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   gap: 0.65rem;
 }
 
-.ai-candidate-card {
-  border: 1px solid var(--rr-line);
-  border-radius: 0.5rem;
-  background: #fff;
-  padding: 0.8rem 0.9rem;
+.ai-candidate-list .ai-candidate-card:last-child {
+  margin-bottom: 0;
 }
 
 .ai-candidate-card__header {
@@ -2743,7 +3112,8 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
 
 @media (max-width: 900px) {
   .analysis-summary-grid,
-  .ai-summary-grid {
+  .ai-summary-grid,
+  .ai-amount-summary {
     grid-template-columns: 1fr;
   }
 
@@ -2752,7 +3122,13 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   }
 
   .insurance-product-card__facts,
-  .ai-candidate-card__facts {
+  .ai-candidate-card__facts,
+  .ai-candidate-head,
+  .ai-related-facts {
     grid-template-columns: 1fr;
+  }
+
+  .ai-candidate-amount {
+    text-align: left;
   }
 }

@@ -55,20 +55,32 @@
     <section class="analysis-section ai-result-meta" aria-label="분석 정보">
       <ul class="analysis-meta-list">
         <li><span>분석 시각</span> {{ ai.analysis_time }}</li>
-        <li><span>엔진</span> {{ ai.engine }}</li>
-        {% if ai.fallback_reason %}
-        <li><span>보강</span> {{ ai.fallback_reason }}</li>
+        <li><span>분석 엔진</span> {{ ai.engine_display or ai.engine }}</li>
+        {% if ai.engine_debug and debug_panel %}
+        <li class="analysis-meta-list__debug"><span>엔진 상세</span> {{ ai.engine_debug }}</li>
+        {% endif %}
+        {% if ai.ai_enhance_note %}
+        <li class="analysis-meta-list__note"><span>보강</span> {{ ai.ai_enhance_note }}</li>
         {% endif %}
         <li><span>입력</span> 진료 {{ ai.input_summary.medical_count }}건 · 상품 {{ ai.input_summary.insurance_product_count }}건</li>
         <li><span>실손성 상품</span> {{ (ai.detected_actual_loss_products or [])|length }}건</li>
       </ul>
     </section>
 
-    <section class="analysis-section ai-summary-grid" aria-label="요약">
+    <section class="analysis-section ai-amount-summary" aria-label="금액 요약">
       <article class="ai-summary-card ai-summary-card--primary">
-        <h2 class="ai-summary-card__label">청구 검토 가능액(합산·추정)</h2>
+        <h2 class="ai-summary-card__label">{{ totals.total_estimated_label or '공제 후 추정액' }}</h2>
+        <p class="ai-summary-card__hint">본인부담금 − 기본 공제금액 합산(카테고리별 공제 후 금액 합계)</p>
         <p class="ai-summary-card__value">{{ totals.total_estimated_display }}</p>
       </article>
+      <article class="ai-summary-card ai-summary-card--secondary">
+        <h2 class="ai-summary-card__label">{{ totals.total_candidate_base_label or '청구 후보 원금' }}</h2>
+        <p class="ai-summary-card__hint">공제 적용 전 본인부담금 합산</p>
+        <p class="ai-summary-card__value">{{ totals.total_candidate_base_display }}</p>
+      </article>
+    </section>
+
+    <section class="analysis-section ai-summary-grid" aria-label="요약">
       <article class="ai-summary-card">
         <h2 class="ai-summary-card__label">총 후보 건수</h2>
         <p class="ai-summary-card__value">{{ totals.total_candidate_count }}건</p>
@@ -93,7 +105,9 @@
           data-category-tab="{{ tab.id }}"
           aria-selected="{% if tab.id == default_category %}true{% else %}false{% endif %}"
         >
-          {{ tab.label }} {{ tab.count }}건 · {{ tab.amount_display }}
+          <span class="ai-category-tab__title">{{ tab.label }} {{ tab.count }}건</span>
+          <span class="ai-category-tab__estimated">공제 후 {{ tab.estimated_amount_display or tab.amount_display }}</span>
+          <span class="ai-category-tab__base">원금 {{ tab.base_amount_display }}</span>
         </button>
         {% endfor %}
       </div>
@@ -111,49 +125,98 @@
           {% for item in items %}
           <article class="ai-candidate-card">
             <header class="ai-candidate-head">
-              <div class="ai-candidate-head__main">
-                <p class="ai-candidate-head__date">{{ item.date }}</p>
+              <p class="ai-candidate-head__date">{{ item.date }}</p>
+              <div class="ai-candidate-head__center">
                 <h3 class="ai-candidate-head__title">{{ item.hospital_name }}</h3>
-                <p class="ai-candidate-head__sub">{{ item.diagnosis_name }}{% if item.department and item.department != '—' %} · {{ item.department }}{% endif %}</p>
+                <p class="ai-candidate-head__sub">
+                  {{ item.diagnosis_name }}
+                  {% if item.department and item.department != '—' %}
+                  <span class="ai-candidate-head__dept">· {{ item.department }}</span>
+                  {% endif %}
+                  {% if item.hospital_type and item.hospital_type != 'unknown' %}
+                  <span class="ai-candidate-head__type">· {% if item.hospital_type == 'pharmacy' %}약국{% elif item.hospital_type == 'hospital' %}병원{% else %}{{ item.hospital_type }}{% endif %}</span>
+                  {% endif %}
+                </p>
               </div>
               <p class="ai-candidate-amount">{{ item.amount_label }}</p>
             </header>
             <details class="ai-candidate-detail">
-              <summary>자세히 보기</summary>
+              <summary class="ai-candidate-detail__summary">자세히 보기</summary>
               <div class="ai-detail-box">
-                <h4 class="ai-detail-box__title">판단 사유</h4>
-                <p>{{ item.reason }}</p>
-                <h4 class="ai-detail-box__title">다음 조치</h4>
-                <p>{{ item.next_action }}</p>
-                {% if item.required_documents %}
-                <h4 class="ai-detail-box__title">필요 서류(추정)</h4>
-                <ul>
-                  {% for doc in item.required_documents %}
-                  <li>{{ doc }}</li>
-                  {% endfor %}
-                </ul>
+                <section class="ai-detail-section">
+                  <h4 class="ai-detail-box__title">판단 사유</h4>
+                  <p class="ai-detail-box__text">{{ item.reason }}</p>
+                </section>
+                <section class="ai-detail-section">
+                  <h4 class="ai-detail-box__title">다음 조치</h4>
+                  <p class="ai-detail-box__text">{{ item.next_action }}</p>
+                </section>
+                {% if item.amount_breakdown %}
+                <section class="ai-detail-section">
+                  <h4 class="ai-detail-box__title">금액 산식</h4>
+                  <dl class="ai-amount-breakdown">
+                    {% if item.amount_breakdown.self_pay_display %}
+                    <div><dt>본인부담금</dt><dd>{{ item.amount_breakdown.self_pay_display }}</dd></div>
+                    {% endif %}
+                    {% if item.amount_breakdown.deductible_amount_display %}
+                    <div><dt>기본 공제금액</dt><dd>{{ item.amount_breakdown.deductible_amount_display }}</dd></div>
+                    {% endif %}
+                    <div><dt>청구가능금액(추정)</dt><dd>{{ item.amount_breakdown.claimable_amount_display }}</dd></div>
+                    {% if item.amount_breakdown.calculation_memo %}
+                    <div><dt>약관 확인 메모</dt><dd>{{ item.amount_breakdown.calculation_memo }}</dd></div>
+                    {% endif %}
+                    {% if item.amount_basis %}
+                    <div><dt>기준</dt><dd>{{ item.amount_basis }}</dd></div>
+                    {% endif %}
+                  </dl>
+                </section>
                 {% endif %}
                 {% if item.related_insurance %}
-                <h4 class="ai-detail-box__title">관련 보험</h4>
-                <ul class="related-insurance-list">
-                  {% for ins in item.related_insurance %}
-                  <li>
-                    <strong>{{ ins.company_name }}</strong>
-                    · {{ ins.insurance_name }}
-                    · {{ ins.policy_number_hid }}
-                    · {{ ins.contract_status }}
-                    {% if ins.matched_coverage %}<br /><span class="ai-detail-muted">담보: {{ ins.matched_coverage }}</span>{% endif %}
-                  </li>
-                  {% endfor %}
-                </ul>
+                <section class="ai-detail-section">
+                  <h4 class="ai-detail-box__title">관련 보험</h4>
+                  <ul class="ai-related-list">
+                    {% for ins in item.related_insurance %}
+                    <li class="ai-related-card{% if ins.is_placeholder %} ai-related-card--placeholder{% endif %}">
+                      <dl class="ai-related-facts">
+                        <div><dt>보험회사</dt><dd>{{ ins.company_name or '보험회사 확인 필요' }}</dd></div>
+                        <div><dt>상품명</dt><dd>{{ ins.insurance_name or '—' }}</dd></div>
+                        <div><dt>관련 담보</dt><dd>{{ ins.matched_coverage or '—' }}</dd></div>
+                        <div><dt>계약상태</dt><dd>{{ ins.contract_status or '—' }}</dd></div>
+                        {% if ins.policy_number_hid and ins.policy_number_hid != '—' %}
+                        <div><dt>증권번호</dt><dd>{{ ins.policy_number_hid }}</dd></div>
+                        {% endif %}
+                      </dl>
+                    </li>
+                    {% endfor %}
+                  </ul>
+                </section>
                 {% endif %}
                 {% if item.related_medical %}
-                <h4 class="ai-detail-box__title">관련 진료</h4>
-                <ul class="related-medical-list">
-                  {% for med in item.related_medical %}
-                  <li>{{ med.visit_date }} · {{ med.hospital_name }} · {{ med.diagnosis }} · {{ med.copay_display }}</li>
-                  {% endfor %}
-                </ul>
+                <section class="ai-detail-section">
+                  <h4 class="ai-detail-box__title">관련 진료</h4>
+                  <ul class="ai-related-list">
+                    {% for med in item.related_medical %}
+                    <li class="ai-related-card">
+                      <dl class="ai-related-facts">
+                        <div><dt>진료일</dt><dd>{{ med.visit_date or '—' }}</dd></div>
+                        <div><dt>병원명</dt><dd>{{ med.hospital_name or '—' }}</dd></div>
+                        <div><dt>상병명</dt><dd>{{ med.diagnosis or '—' }}</dd></div>
+                        <div><dt>본인부담금</dt><dd>{{ med.copay_display or '—' }}</dd></div>
+                      </dl>
+                    </li>
+                    {% endfor %}
+                  </ul>
+                </section>
+                {% endif %}
+                {% if item.required_documents %}
+                <section class="ai-detail-section">
+                  <h4 class="ai-detail-box__title">필요 서류(추정)</h4>
+                  <ul class="ai-detail-docs">
+                    {% for doc in item.required_documents %}
+                    <li>{{ doc }}</li>
+                    {% endfor %}
+                  </ul>
+                </section>
                 {% endif %}
               </div>
             </details>
@@ -188,6 +251,41 @@
         <div class="hospital-insurance-debug__row"><dt>ai_total_estimated_amount</dt><dd>{{ analysis_debug.ai_total_estimated_amount }}</dd></div>
         <div class="hospital-insurance-debug__row"><dt>detected_actual_loss_count</dt><dd>{{ analysis_debug.detected_actual_loss_count }}</dd></div>
         <div class="hospital-insurance-debug__row"><dt>fallback_reason</dt><dd>{{ analysis_debug.fallback_reason }}</dd></div>
+        {% if analysis_debug.classification_ok is defined %}
+        <div class="hospital-insurance-debug__row"><dt>classification_ok</dt><dd>{% if analysis_debug.classification_ok %}true{% else %}<strong class="ai-debug-error">false</strong>{% endif %}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>low_potential_estimated_positive_count</dt><dd>{{ analysis_debug.low_potential_estimated_positive_count }}</dd></div>
+        <div class="hospital-insurance-debug__row"><dt>classification_errors</dt><dd>{{ analysis_debug.classification_errors }}</dd></div>
+        {% if analysis_debug.category_estimated_sums %}
+        <div class="hospital-insurance-debug__row hospital-insurance-debug__row--block">
+          <dt>category_estimated_sums</dt>
+          <dd>
+            <ul class="ai-debug-product-list">
+              {% for key, val in analysis_debug.category_estimated_sums.items() %}
+              <li>{{ key }}: {{ val }}</li>
+              {% endfor %}
+            </ul>
+          </dd>
+        </div>
+        {% endif %}
+        {% endif %}
+        {% if ai_analysis_result and ai_analysis_result.engine_debug %}
+        <div class="hospital-insurance-debug__row"><dt>engine_debug</dt><dd>{{ ai_analysis_result.engine_debug }}</dd></div>
+        {% endif %}
+        {% if ai_analysis_result and ai_analysis_result.detected_actual_loss_products %}
+        <div class="hospital-insurance-debug__row hospital-insurance-debug__row--block">
+          <dt>detected_actual_loss_products</dt>
+          <dd>
+            <ul class="ai-debug-product-list">
+              {% for p in ai_analysis_result.detected_actual_loss_products %}
+              <li>
+                <strong>{{ p.company_name }}</strong> · {{ p.insurance_name }}
+                {% if p.detection_reason %}<br /><span class="ai-detail-muted">근거: {{ p.detection_reason }}</span>{% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+          </dd>
+        </div>
+        {% endif %}
       </dl>
     </aside>
     {% endif %}
@@ -196,6 +294,6 @@
   <footer class="hospital-start-footer">
     <p>본 화면은 청구 검토 후보 추정이며, 최종 청구 가능 여부는 약관·서류·보험사 심사 결과에 따릅니다.</p>
   </footer>
-  <script src="/static/ai_analysis.js"></script>
+  <script src="/static/ai_analysis.js" defer></script>
 </body>
 </html>

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>진료내역 전체보기 · 래드리본 병원용</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="hospital-hira-page medical-records-full-page">
+  <header class="hospital-start-header">
+    <div class="hospital-start-header__inner">
+      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__text">
+          <span class="brand__name-ko">래드리본</span>
+          <span class="brand__name-en">RedRibbon</span>
+        </span>
+      </a>
+      <a class="hospital-start-header__back" href="/hospital/analysis-ready?flow_id={{ flow_id }}">5단계로 돌아가기</a>
+    </div>
+  </header>
+
+  <main class="medical-records-full-main">
+    <section class="medical-records-full-hero">
+      <h1 class="medical-records-full-hero__title">진료내역 전체보기</h1>
+      <p class="medical-records-full-hero__lead">
+        저장된 진료내역 기준 · 기본 {{ medical_result_counts.basic }}건 ·
+        세부 {{ medical_result_counts.detail }}건 ·
+        처방 {{ medical_result_counts.prescribe }}건
+      </p>
+      {% if medical_source_note %}
+      <p class="medical-records-full-hero__note">{{ medical_source_note }}</p>
+      {% endif %}
+    </section>
+
+    {% include "partials/medical_records_full_tables.html" %}
+
+    <nav class="medical-records-full-nav">
+      <a class="btn btn--primary" href="/hospital/analysis-ready?flow_id={{ flow_id }}">5단계로 돌아가기</a>
+      <a class="btn btn--ghost" href="/hospital/hira-start?flow_id={{ flow_id }}">3단계 진료내역</a>
+    </nav>
+  </main>
+
+  <script src="/static/medical_records_full.js" defer></script>
+</body>
+</html>
