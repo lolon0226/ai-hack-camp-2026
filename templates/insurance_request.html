@@ -60,7 +60,9 @@
       </dl>
     </section>
 
+    {% if show_credit4u_credentials_card %}
     {% include "partials/credit4u_credentials_card.html" %}
+    {% endif %}
 
     <section class="hospital-insurance-notice" aria-label="조회 안내">
       <h2 class="hospital-insurance-notice__title">조회 안내</h2>
@@ -80,7 +82,7 @@
       {% if insurance_status == "pending" %}
       <p class="hospital-insurance-state__lead">보험가입이력 조회가 필요합니다.</p>
       <p class="hospital-insurance-state__hint">처음 조회하는 고객 또는 회원가입이 필요한 고객은 자동 생성 계정으로 진행합니다.</p>
-      <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}">
+      <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}" data-loading-message="신용정보원 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요.">
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">보험가입이력 조회 시작</button>
       </form>
 
@@ -93,7 +95,7 @@
         <img class="hospital-insurance-secure-no__image" src="{{ credit4u_secure_no.image_src }}" alt="보안문자 이미지" />
       </div>
       {% endif %}
-      <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/secure-no?flow_id={{ flow_id }}">
+      <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/secure-no?flow_id={{ flow_id }}" data-loading-message="보안문자를 확인하고 있습니다. 잠시만 기다려 주세요.">
         <label class="hospital-insurance-secure-no__label" for="credit4u-secure-no">보안문자</label>
         <input class="hospital-insurance-secure-no__input" id="credit4u-secure-no" name="secureNo" type="text" inputmode="text" autocomplete="off" required />
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">보안문자 확인 후 계속</button>
@@ -107,9 +109,26 @@
         <p class="hospital-insurance-state__desc">잠시만 기다려 주세요.</p>
       </div>
 
-      {% elif insurance_stage == "existing_account_required" or show_existing_account_section %}
+      {% elif insurance_stage == "already_registered" %}
       <h2 class="hospital-insurance-state__lead">이미 신용정보원에 가입된 고객입니다.</h2>
-      <p class="hospital-insurance-state__desc">기존에 사용하시던 내보험다보여 아이디와 비밀번호를 입력해 주세요.</p>
+      <p class="hospital-insurance-state__desc">
+        이 고객은 신용정보원 내보험다보여에 이미 가입되어 있습니다.<br />
+        저장된 계정정보가 있으면 해당 계정으로 보험가입이력을 자동 조회합니다.
+      </p>
+      {% if insurance_message %}
+      <p class="hospital-insurance-state__desc hospital-insurance-state__desc--muted">{{ insurance_message }}</p>
+      {% endif %}
+      <div class="hospital-insurance-progress" aria-busy="true">
+        <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
+        <p class="hospital-insurance-state__desc">보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요.</p>
+      </div>
+
+      {% elif insurance_stage == "existing_account_required" %}
+      <h2 class="hospital-insurance-state__lead">이미 신용정보원에 가입된 고객입니다.</h2>
+      <p class="hospital-insurance-state__desc">
+        이 고객은 신용정보원 내보험다보여에 이미 가입되어 있습니다.<br />
+        저장된 계정정보가 없어 기존 신용정보원 아이디와 비밀번호를 입력해 주세요.
+      </p>
       <form class="hospital-insurance-existing__form" method="post" action="/hospital/insurance-request/existing-account?flow_id={{ flow_id }}">
         <label class="hospital-insurance-existing__label" for="credit4u-existing-id">기존 아이디</label>
         <input class="hospital-insurance-existing__input" id="credit4u-existing-id" name="existing_id" type="text" autocomplete="username" required />
@@ -122,24 +141,24 @@
       {% endif %}
 
       {% elif insurance_stage == "register_required" %}
-      <h2 class="hospital-insurance-state__lead">신용정보원 회원가입이 필요합니다.</h2>
-      <p class="hospital-insurance-state__desc">자동 생성된 고객별 ID/PW로 회원가입 절차를 진행합니다.</p>
-      <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/register-start?flow_id={{ flow_id }}">
-        <button type="submit" class="btn btn--primary hospital-insurance-state__btn">회원가입 절차 시작</button>
-      </form>
-
-      {% elif insurance_stage == "register_requesting" %}
       <div class="hospital-insurance-progress" aria-busy="true">
         <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
         <h2 class="hospital-insurance-state__lead">신용정보원 회원가입을 시작하는 중입니다.</h2>
         <p class="hospital-insurance-state__desc">잠시만 기다려 주세요.</p>
       </div>
 
+      {% elif insurance_stage == "register_requesting" %}
+      <div class="hospital-insurance-progress" aria-busy="true">
+        <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
+        <h2 class="hospital-insurance-state__lead">신용정보원 회원가입을 시작하는 중입니다.</h2>
+        <p class="hospital-insurance-state__desc">신용정보원 회원가입 절차를 시작하고 있습니다. 잠시만 기다려 주세요.</p>
+      </div>
+
       {% elif insurance_stage == "register_secure_no_submitting" %}
       <div class="hospital-insurance-progress" aria-busy="true">
         <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
         <h2 class="hospital-insurance-state__lead">회원가입 보안문자를 확인하고 있습니다.</h2>
-        <p class="hospital-insurance-state__desc">잠시만 기다려 주세요.</p>
+        <p class="hospital-insurance-state__desc">회원가입 보안문자를 확인하고 있습니다. 잠시만 기다려 주세요.</p>
       </div>
 
       {% elif insurance_stage == "register_secure_no_required" %}
@@ -150,29 +169,73 @@
         <img class="hospital-insurance-secure-no__image" src="{{ credit4u_secure_no.image_src }}" alt="회원가입 보안문자 이미지" />
       </div>
       {% endif %}
-      <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/register-secure-no?flow_id={{ flow_id }}">
+      <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/register-secure-no?flow_id={{ flow_id }}" data-loading-message="회원가입 보안문자를 확인하고 있습니다. 잠시만 기다려 주세요.">
         <label class="hospital-insurance-secure-no__label" for="credit4u-register-secure-no">보안문자</label>
         <input class="hospital-insurance-secure-no__input" id="credit4u-register-secure-no" name="secureNo" type="text" inputmode="text" autocomplete="off" required />
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">보안문자 확인 후 계속</button>
       </form>
 
+      {% elif insurance_stage == "register_sms_submitting" %}
+      <div class="hospital-insurance-progress" aria-busy="true">
+        <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
+        <h2 class="hospital-insurance-state__lead">SMS 인증번호를 확인하고 있습니다.</h2>
+        <p class="hospital-insurance-state__desc">잠시만 기다려 주세요.</p>
+      </div>
+
       {% elif insurance_stage == "register_sms_required" %}
       <h2 class="hospital-insurance-state__lead">SMS 인증번호 입력</h2>
       <p class="hospital-insurance-state__desc">고객 휴대폰으로 전송된 인증번호를 입력해 주세요.</p>
-      <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/register-sms?flow_id={{ flow_id }}">
+      <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/register-sms?flow_id={{ flow_id }}" data-loading-message="SMS 인증번호를 확인하고 있습니다. 잠시만 기다려 주세요.">
         <label class="hospital-insurance-secure-no__label" for="credit4u-register-sms">SMS 인증번호</label>
         <input class="hospital-insurance-secure-no__input" id="credit4u-register-sms" name="smsAuthNo" type="text" inputmode="numeric" autocomplete="one-time-code" required />
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">SMS 인증 확인</button>
       </form>
 
+      {% elif insurance_stage == "register_retryable_timeout" %}
+      <h2 class="hospital-insurance-state__lead">응답 대기시간 초과</h2>
+      <p class="hospital-insurance-state__desc">
+        신용정보원 응답을 기다리는 중 시간이 초과되었습니다.<br />
+        입력한 정보와 인증 상태는 유지되어 있습니다.<br />
+        현재 단계에서 다시 시도해 주세요.
+      </p>
+      <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/register-retry-current?flow_id={{ flow_id }}">
+        <button type="submit" class="btn btn--primary hospital-insurance-state__btn">현재 단계 다시 시도</button>
+      </form>
+
+      {% elif insurance_stage == "register_signup_info_submitting" %}
+      <div class="hospital-insurance-progress" aria-busy="true">
+        <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
+        <h2 class="hospital-insurance-state__lead">회원가입 정보를 제출하고 있습니다.</h2>
+        <p class="hospital-insurance-state__desc">신용정보원 응답을 기다리고 있습니다. 최대 수 분이 걸릴 수 있습니다. 창을 닫지 마세요.</p>
+      </div>
+
       {% elif insurance_stage == "register_signup_info_required" %}
       <h2 class="hospital-insurance-state__lead">회원가입 정보 입력</h2>
-      <p class="hospital-insurance-state__desc">자동 생성된 아이디·비밀번호와 고객 이메일을 확인해 주세요.</p>
+      {% if credit4u_register_extra_reason %}
+      <p class="hospital-insurance-state__desc hospital-register-signup__reason">
+        신용정보원 요청 사유: {{ credit4u_register_extra_reason }}
+      </p>
+      {% endif %}
+      {% if credit4u_signup_id_retry or ('id' in credit4u_signup_required_fields and credit4u_signup_required_fields|length == 1) %}
+      <p class="hospital-insurance-state__desc hospital-insurance-state__desc--warn">
+        아이디가 이미 사용 중이거나 신용정보원 검증을 통과하지 못했습니다.<br />
+        다른 아이디를 생성해 다시 제출하세요.
+      </p>
+      {% elif 'password' in credit4u_signup_required_fields %}
+      <p class="hospital-insurance-state__desc hospital-insurance-state__desc--warn">
+        신용정보원에서 비밀번호 재입력을 요청했습니다. 아래 비밀번호를 확인한 뒤 다시 제출하거나 자동으로 다시 생성해 주세요.
+      </p>
+      {% elif 'email' in credit4u_signup_required_fields %}
+      <p class="hospital-insurance-state__desc hospital-insurance-state__desc--warn">
+        신용정보원에서 이메일 재입력을 요청했습니다. 허용 도메인의 이메일을 입력해 주세요.
+      </p>
+      {% else %}
+      <p class="hospital-insurance-state__desc">
+        신용정보원 회원가입에 사용할 아이디와 비밀번호는 자동 생성되었습니다.<br />
+        이메일은 고객이 실제 인증번호를 받을 수 있는 주소를 입력해 주세요.
+      </p>
+      {% endif %}
       <div class="hospital-register-signup">
-        <div class="hospital-register-signup__field">
-          <label class="hospital-register-signup__label" for="credit4u-register-signup-id">아이디</label>
-          <input class="hospital-register-signup__input" id="credit4u-register-signup-id" type="text" value="{{ credit4u_id }}" readonly />
-        </div>
         <div class="hospital-register-signup__field">
           <label class="hospital-register-signup__label" for="credit4u-register-signup-password">비밀번호</label>
           <div class="hospital-credit4u-credentials__row">
@@ -190,29 +253,78 @@
             {% endif %}
           </div>
         </div>
-        <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/register-signup-info?flow_id={{ flow_id }}">
+        <form class="hospital-insurance-state__form hospital-insurance-secure-no__form hospital-register-signup__form" method="post" action="/hospital/insurance-request/register-signup-info?flow_id={{ flow_id }}" data-loading-message="회원가입 정보를 제출하고 있습니다. 신용정보원 응답을 기다리는 중입니다. 창을 닫지 마세요." data-loading-detail="신용정보원 응답을 기다리고 있습니다. 최대 수 분이 걸릴 수 있습니다.">
+          <label class="hospital-register-signup__label" for="credit4u-register-signup-id">아이디</label>
+          <input
+            class="hospital-register-signup__input hospital-insurance-secure-no__input"
+            id="credit4u-register-signup-id"
+            name="userId"
+            type="text"
+            value="{{ credit4u_id }}"
+            autocomplete="username"
+            readonly
+            required
+          />
           <label class="hospital-insurance-secure-no__label" for="credit4u-register-email">이메일</label>
           <input class="hospital-insurance-secure-no__input" id="credit4u-register-email" name="email" type="email" autocomplete="email" placeholder="example@naver.com" value="{{ credit4u_register_email or '' }}" required />
-          <p class="hospital-insurance-state__hint">naver.com, hanmail.net, daum.net, nate.com, kakao.com 등 사용 가능한 이메일을 입력해 주세요.</p>
-          <button type="submit" class="btn btn--primary hospital-insurance-state__btn">회원가입 정보 제출</button>
+          <div class="hospital-email-domain-notice">
+            <p class="hospital-email-domain-notice__lead">신용정보원 회원가입은 일부 이메일 도메인만 허용됩니다.</p>
+            <p class="hospital-email-domain-notice__recommend">가급적 naver.com 또는 kakao.com 이메일을 사용해 주세요.</p>
+            <p class="hospital-email-domain-notice__label">허용 도메인:</p>
+            <p class="hospital-email-domain-notice__domains">{{ credit4u_allowed_email_domains }}</p>
+          </div>
+          <button type="submit" class="btn btn--primary hospital-insurance-state__btn">회원가입 정보 다시 제출</button>
         </form>
+        {% if credit4u_signup_id_retry or 'id' in credit4u_signup_required_fields or 'password' in credit4u_signup_required_fields %}
+        <form class="hospital-insurance-state__form hospital-insurance-state__form--secondary" method="post" action="/hospital/insurance-request/register-regenerate-id?flow_id={{ flow_id }}">
+          <button type="submit" class="btn btn--ghost hospital-insurance-state__btn">{% if 'password' in credit4u_signup_required_fields and 'id' not in credit4u_signup_required_fields %}아이디·비밀번호 다시 생성{% else %}다른 아이디 자동 생성{% endif %}</button>
+        </form>
+        {% endif %}
+      </div>
+
+      {% elif insurance_stage == "register_email_auth_submitting" %}
+      <div class="hospital-insurance-progress" aria-busy="true">
+        <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
+        <h2 class="hospital-insurance-state__lead">이메일 인증번호를 확인하고 있습니다.</h2>
+        <p class="hospital-insurance-state__desc">잠시만 기다려 주세요.</p>
       </div>
 
       {% elif insurance_stage == "register_email_auth_required" %}
       <h2 class="hospital-insurance-state__lead">회원가입 이메일 인증</h2>
       <p class="hospital-insurance-state__desc">이메일로 전송된 인증번호를 입력해 주세요.</p>
-      <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/register-email-auth?flow_id={{ flow_id }}">
+      <form class="hospital-insurance-state__form hospital-insurance-secure-no__form" method="post" action="/hospital/insurance-request/register-email-auth?flow_id={{ flow_id }}" data-loading-message="이메일 인증번호를 확인하고 있습니다. 잠시만 기다려 주세요.">
         <label class="hospital-insurance-secure-no__label" for="credit4u-register-email-auth">이메일 인증번호</label>
         <input class="hospital-insurance-secure-no__input" id="credit4u-register-email-auth" name="emailAuthNo" type="text" inputmode="numeric" autocomplete="one-time-code" required />
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">이메일 인증 확인</button>
       </form>
 
+      {% elif insurance_stage == "register_signup_auto_retrying" %}
+      <div class="hospital-insurance-progress" aria-busy="true">
+        <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
+        <h2 class="hospital-insurance-state__lead">회원가입 정보 자동 재시도</h2>
+        <p class="hospital-insurance-state__desc">{{ insurance_message or "신용정보원 아이디를 다시 생성해 회원가입 정보를 재제출하고 있습니다." }}</p>
+      </div>
+
+      {% elif insurance_stage == "register_completed_but_contract_retry_needed" %}
+      <div class="hospital-insurance-progress" aria-busy="true">
+        <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
+        <h2 class="hospital-insurance-state__lead">보험가입이력 자동 재조회</h2>
+        <p class="hospital-insurance-state__desc">{{ insurance_message or "회원가입 직후 조회가 지연되고 있습니다. 잠시 후 자동 재조회합니다." }}</p>
+      </div>
+
       {% elif insurance_stage == "register_completed" %}
       <h2 class="hospital-insurance-state__lead">신용정보원 회원가입 완료</h2>
-      <p class="hospital-insurance-state__desc">회원가입이 완료되었습니다. 보험가입이력 조회를 다시 진행할 수 있습니다.</p>
-      <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}">
-        <button type="submit" class="btn btn--primary hospital-insurance-state__btn">보험가입이력 다시 조회</button>
+      <p class="hospital-insurance-state__desc">{{ insurance_message or "회원가입이 완료되었습니다. 보험가입이력을 자동 조회하고 있습니다." }}</p>
+      <form class="hospital-insurance-state__form hospital-insurance-state__form--secondary" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}" data-loading-message="신용정보원 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요.">
+        <button type="submit" class="btn btn--ghost hospital-insurance-state__btn">보험가입이력 다시 조회 (보조)</button>
       </form>
+
+      {% elif insurance_stage == "register_continue_pending" %}
+      <div class="hospital-insurance-progress" aria-busy="true">
+        <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
+        <h2 class="hospital-insurance-state__lead">회원가입 절차를 진행하는 중입니다.</h2>
+        <p class="hospital-insurance-state__desc">신용정보원 응답을 확인하고 있습니다. 잠시만 기다려 주세요.</p>
+      </div>
 
       {% elif insurance_stage == "email_required" %}
       <h2 class="hospital-insurance-state__lead">이메일 확인 필요</h2>
@@ -229,8 +341,7 @@
       <div class="hospital-insurance-progress" aria-busy="true">
         <div class="hospital-insurance-progress__spinner" aria-hidden="true"></div>
         <h2 class="hospital-insurance-state__lead">보험가입이력을 조회하는 중입니다.</h2>
-        <p class="hospital-insurance-state__desc">신용정보원 보험가입이력 조회를 요청하고 있습니다.</p>
-        <p class="hospital-insurance-state__desc">잠시만 기다려 주세요.</p>
+        <p class="hospital-insurance-state__desc">신용정보원 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요.</p>
       </div>
 
       {% else %}
@@ -243,15 +354,15 @@
       {% endif %}
       {% endif %}
 
-      {% if demo_complete_allowed and insurance_stage not in ["secure_no_required", "register_required", "register_requesting", "register_secure_no_submitting", "register_secure_no_required", "register_sms_required", "register_signup_info_required", "register_email_auth_required", "register_completed", "email_required"] %}
+      {% if demo_complete_allowed and insurance_stage not in ["secure_no_required", "register_required", "register_requesting", "register_secure_no_submitting", "register_secure_no_required", "register_sms_submitting", "register_sms_required", "register_signup_info_submitting", "register_signup_info_required", "register_signup_auto_retrying", "register_email_auth_submitting", "register_email_auth_required", "register_continue_pending", "register_retryable_timeout", "register_completed", "register_completed_but_contract_retry_needed", "already_registered", "email_required", "requesting_contract_info", "submitting_secure_no"] %}
       <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/complete?flow_id={{ flow_id }}">
         <button type="submit" class="btn btn--primary hospital-insurance-state__btn">조회 완료 처리</button>
       </form>
       <p class="hospital-insurance-state__hint">데모·디버그 모드에서만 표시되는 완료 처리 버튼입니다.</p>
-      {% elif insurance_stage not in ["secure_no_required", "register_required", "register_requesting", "register_secure_no_submitting", "register_secure_no_required", "register_sms_required", "register_signup_info_required", "register_email_auth_required", "register_completed", "email_required"] %}
+      {% elif insurance_stage not in ["secure_no_required", "register_required", "register_requesting", "register_secure_no_submitting", "register_secure_no_required", "register_sms_submitting", "register_sms_required", "register_signup_info_submitting", "register_signup_info_required", "register_signup_auto_retrying", "register_email_auth_submitting", "register_email_auth_required", "register_continue_pending", "register_retryable_timeout", "register_completed", "register_completed_but_contract_retry_needed", "already_registered", "email_required", "requesting_contract_info", "submitting_secure_no"] %}
       <p class="hospital-insurance-state__hint">상용 모드에서는 외부 API 조회 결과가 반영된 후에만 완료됩니다.</p>
       {% endif %}
-      {% if insurance_stage not in ["secure_no_required", "register_required", "register_requesting", "register_secure_no_submitting", "register_secure_no_required", "register_sms_required", "register_signup_info_required", "register_email_auth_required", "register_completed", "email_required", "submitting_secure_no"] %}
+      {% if insurance_stage not in ["secure_no_required", "register_required", "register_requesting", "register_secure_no_submitting", "register_secure_no_required", "register_sms_submitting", "register_sms_required", "register_signup_info_submitting", "register_signup_info_required", "register_signup_auto_retrying", "register_email_auth_submitting", "register_email_auth_required", "register_continue_pending", "register_retryable_timeout", "register_completed", "register_completed_but_contract_retry_needed", "already_registered", "email_required", "requesting_contract_info", "submitting_secure_no"] %}
       <form class="hospital-insurance-state__form hospital-insurance-state__form--secondary" method="post" action="/hospital/insurance-request/retry?flow_id={{ flow_id }}">
         <button type="submit" class="btn btn--ghost hospital-insurance-state__btn">조회 취소</button>
       </form>
@@ -319,7 +430,7 @@
       {% if debug_panel and credit4u_debug and credit4u_debug.credit4u_result_code != "—" %}
       <p class="hospital-insurance-state__hint">응답 코드: {{ credit4u_debug.credit4u_result_code }}</p>
       {% endif %}
-      {% if show_existing_account_section %}
+      {% if insurance_stage == "existing_account_required" %}
       <h2 class="hospital-insurance-state__lead">이미 신용정보원에 가입된 고객입니다.</h2>
       <p class="hospital-insurance-state__desc">기존에 사용하시던 내보험다보여 아이디와 비밀번호를 입력해 주세요.</p>
       <form class="hospital-insurance-existing__form" method="post" action="/hospital/insurance-request/existing-account?flow_id={{ flow_id }}">
@@ -389,6 +500,10 @@
           <dd>{{ credit4u_debug.insurance_stage }}</dd>
         </div>
         <div class="hospital-insurance-debug__row">
+          <dt>current_request_status</dt>
+          <dd>{{ credit4u_debug.current_request_status }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
           <dt>register_endpoint</dt>
           <dd>{{ credit4u_debug.register_endpoint }}</dd>
         </div>
@@ -397,13 +512,175 @@
           <dd>{{ credit4u_debug.register_payload_keys }}</dd>
         </div>
         <div class="hospital-insurance-debug__row">
+          <dt>register_payload_purpose</dt>
+          <dd>{{ credit4u_debug.register_payload_purpose }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>checkParamUUID_present</dt>
+          <dd>{{ credit4u_debug.checkParamUUID_present }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>checkParamUUID_length</dt>
+          <dd>{{ credit4u_debug.checkParamUUID_length }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>payload_has_checkParamUUID</dt>
+          <dd>{{ credit4u_debug.payload_has_checkParamUUID }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>payload_has_id</dt>
+          <dd>{{ credit4u_debug.payload_has_id }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>payload_has_password</dt>
+          <dd>{{ credit4u_debug.payload_has_password }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>payload_has_email</dt>
+          <dd>{{ credit4u_debug.payload_has_email }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>payload_has_secureNo</dt>
+          <dd>{{ credit4u_debug.payload_has_secureNo }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>payload_has_secureNoRefresh</dt>
+          <dd>{{ credit4u_debug.payload_has_secureNoRefresh }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>payload_has_smsAuthNo</dt>
+          <dd>{{ credit4u_debug.payload_has_smsAuthNo }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>payload_has_emailAuthNo</dt>
+          <dd>{{ credit4u_debug.payload_has_emailAuthNo }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>password_encrypted</dt>
+          <dd>{{ credit4u_debug.password_encrypted }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
           <dt>register_extra_info_keys</dt>
           <dd>{{ credit4u_debug.register_extra_info_keys }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>register_extra_code</dt>
+          <dd>{{ credit4u_debug.register_extra_code }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>register_extra_message</dt>
+          <dd>{{ credit4u_debug.register_extra_message }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>register_error_message</dt>
+          <dd>{{ credit4u_debug.register_error_message }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credit4u_signup_required_fields</dt>
+          <dd>{{ credit4u_debug.credit4u_signup_required_fields }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>generated_password_rule_ok</dt>
+          <dd>{% if credit4u_debug.generated_password_rule_ok %}예{% else %}아니오{% endif %}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>signup_email_domain</dt>
+          <dd>{{ credit4u_debug.signup_email_domain }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credit4u_id_attempt_no</dt>
+          <dd>{{ credit4u_debug.credit4u_id_attempt_no }}</dd>
         </div>
         <div class="hospital-insurance-debug__row">
           <dt>register_two_way_info_saved</dt>
           <dd>{% if credit4u_debug.register_two_way_info_saved %}예{% else %}아니오{% endif %}</dd>
         </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>last_register_stage</dt>
+          <dd>{{ credit4u_debug.last_register_stage }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>email_domain_allowed</dt>
+          <dd>{{ credit4u_debug.email_domain_allowed }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>register_completed_auto_contract_started</dt>
+          <dd>{{ credit4u_debug.register_completed_auto_contract_started }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credit4u_credentials_saved</dt>
+          <dd>{{ credit4u_debug.credit4u_credentials_saved }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>stored_credit4u_credentials_exists</dt>
+          <dd>{{ credit4u_debug.stored_credit4u_credentials_exists }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credit4u_auto_retry_count</dt>
+          <dd>{{ credit4u_debug.credit4u_auto_retry_count }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>last_register_extra_code</dt>
+          <dd>{{ credit4u_debug.last_register_extra_code }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>auto_retry_reason</dt>
+          <dd>{{ credit4u_debug.auto_retry_reason }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>insurance_contract_auto_started</dt>
+          <dd>{{ credit4u_debug.insurance_contract_auto_started }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>insurance_contract_result_code</dt>
+          <dd>{{ credit4u_debug.insurance_contract_result_code }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>insurance_records_saved</dt>
+          <dd>{{ credit4u_debug.insurance_records_saved }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credential_version</dt>
+          <dd>{{ credit4u_debug.credential_version }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>already_registered_handled</dt>
+          <dd>{{ credit4u_debug.already_registered_handled }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>already_registered_auto_contract_started</dt>
+          <dd>{{ credit4u_debug.already_registered_auto_contract_started }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credential_save_error</dt>
+          <dd>{{ credit4u_debug.credential_save_error }}</dd>
+        </div>
+        {% if credit4u_debug.register_signup_info_post_entered == "예" %}
+        <div class="hospital-insurance-debug__row">
+          <dt>register_signup_info_post_entered</dt>
+          <dd>{{ credit4u_debug.register_signup_info_post_entered }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_register_signup_request_started</dt>
+          <dd>{{ credit4u_debug.codef_register_signup_request_started }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>codef_register_signup_request_finished</dt>
+          <dd>{{ credit4u_debug.codef_register_signup_request_finished }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credit4u_elapsed_seconds</dt>
+          <dd>{{ credit4u_debug.credit4u_elapsed_seconds }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credit4u_http_timeout_seconds</dt>
+          <dd>{{ credit4u_debug.credit4u_http_timeout_seconds }}</dd>
+        </div>
+        <div class="hospital-insurance-debug__row">
+          <dt>credit4u_timeout_source</dt>
+          <dd>{{ credit4u_debug.credit4u_timeout_source }}</dd>
+        </div>
+        {% endif %}
       </dl>
     </aside>
     {% endif %}
@@ -415,8 +692,6 @@
       실제 서비스에서는 고객 본인확인과 명시적 동의 후 필요한 범위에서만 정보를 조회합니다.
     </p>
   </footer>
-  {% if show_credit4u_credentials_card or insurance_stage == "register_signup_info_required" %}
   <script src="/static/insurance_request.js"></script>
-  {% endif %}
 </body>
 </html>

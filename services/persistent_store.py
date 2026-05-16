@@ -2,6 +2,7 @@
 """본선용 SQLite 영구 저장(진료내역·고객 식별키)."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -12,6 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -19,6 +23,8 @@ DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "redribbon_final.db"
 
 MEDICAL_SOURCE_CODEF_HIRA = "codef_hira"
+INSURANCE_SOURCE_CODEF_CREDIT4U = "codef_credit4u"
+CREDENTIAL_SOURCE_GENERATED = "generated"
 
 
 class PersistentStoreConfigError(RuntimeError):
@@ -96,6 +102,33 @@ def ensure_storage() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS credit4u_credentials (
+                customer_key TEXT PRIMARY KEY,
+                credit4u_id TEXT NOT NULL,
+                password_encrypted TEXT NOT NULL,
+                credential_source TEXT NOT NULL,
+                credential_version TEXT NOT NULL DEFAULT 'v1',
+                id_attempt_no INTEGER NOT NULL DEFAULT 0,
+                email_domain TEXT,
+                register_completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS insurance_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_key TEXT NOT NULL,
+                flow_id TEXT NOT NULL,
+                raw_response_json TEXT NOT NULL,
+                normalized_json TEXT NOT NULL,
+                summary_json TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_insurance_records_customer_created
+                ON insurance_records (customer_key, created_at DESC);
             """
         )
         conn.commit()
@@ -285,13 +318,261 @@ def has_medical_records(customer: dict[str, Any]) -> bool:
     return load_latest_medical_records(customer) is not None
 
 
+def _credit4u_encryption_key() -> bytes:
+    """비밀번호 암호화 키(REDRIBBON_CREDIT4U_SECRET 기반)."""
+    secret = (os.getenv("REDRIBBON_CREDIT4U_SECRET") or "").strip()
+    if not secret:
+        raise PersistentStoreConfigError("REDRIBBON_CREDIT4U_SECRET is missing")
+    return hashlib.sha256(f"rr-credit4u-cred-v1:{secret}".encode("utf-8")).digest()
+
+
+def encrypt_credit4u_password_plaintext(plain_password: str) -> str:
+    """AES-GCM 암호문(base64url)."""
+    value = (plain_password or "").strip()
+    if not value:
+        raise ValueError("password is empty")
+    key = _credit4u_encryption_key()
+    nonce = get_random_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(value.encode("utf-8"))
+    blob = nonce + tag + ciphertext
+    return base64.urlsafe_b64encode(blob).decode("ascii")
+
+
+def decrypt_credit4u_password_ciphertext(ciphertext: str) -> str:
+    """저장된 AES-GCM 암호문 복호화."""
+    blob = base64.urlsafe_b64decode((ciphertext or "").encode("ascii"))
+    if len(blob) < 28:
+        raise ValueError("invalid encrypted password blob")
+    nonce, tag, encrypted = blob[:12], blob[12:28], blob[28:]
+    key = _credit4u_encryption_key()
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    return cipher.decrypt_and_verify(encrypted, tag).decode("utf-8")
+
+
+def _email_domain_only(email: str) -> str:
+    value = (email or "").strip().lower()
+    if "@" not in value:
+        return ""
+    return value.rsplit("@", 1)[-1]
+
+
+def save_credit4u_credentials(
+    customer: dict[str, Any],
+    credentials: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """고객별 신용정보원 ID·비밀번호 영구 저장(비밀번호는 AES-GCM)."""
+    customer_key = make_customer_key(customer)
+    save_customer(customer)
+    meta = metadata if isinstance(metadata, dict) else {}
+    user_id = str(credentials.get("id") or "").strip()
+    password = str(credentials.get("password") or "").strip()
+    if not user_id or not password:
+        raise ValueError("credit4u id and password are required")
+    encrypted = encrypt_credit4u_password_plaintext(password)
+    source = str(
+        credentials.get("source")
+        or meta.get("credential_source")
+        or CREDENTIAL_SOURCE_GENERATED
+    ).strip()
+    attempt_no = int(
+        meta.get("credit4u_id_attempt_no")
+        or credentials.get("credit4u_id_attempt_no")
+        or 0
+    )
+    email_domain = str(
+        meta.get("email_domain")
+        or _email_domain_only(
+            str(meta.get("email") or credentials.get("email") or "")
+        )
+    ).strip()
+    register_completed_at = str(meta.get("register_completed_at") or "").strip() or None
+    credential_version = str(
+        meta.get("credential_version")
+        or credentials.get("credential_version")
+        or "v1"
+    ).strip() or "v1"
+    now = _utc_now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        existing = conn.execute(
+            "SELECT created_at FROM credit4u_credentials WHERE customer_key = ?",
+            (customer_key,),
+        ).fetchone()
+        created_at = str(existing[0]) if existing and existing[0] else now
+        conn.execute(
+            """
+            INSERT INTO credit4u_credentials (
+                customer_key, credit4u_id, password_encrypted, credential_source,
+                credential_version, id_attempt_no, email_domain, register_completed_at,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(customer_key) DO UPDATE SET
+                credit4u_id = excluded.credit4u_id,
+                password_encrypted = excluded.password_encrypted,
+                credential_source = excluded.credential_source,
+                credential_version = excluded.credential_version,
+                id_attempt_no = excluded.id_attempt_no,
+                email_domain = excluded.email_domain,
+                register_completed_at = COALESCE(excluded.register_completed_at, register_completed_at),
+                updated_at = excluded.updated_at
+            """,
+            (
+                customer_key,
+                user_id,
+                encrypted,
+                source,
+                credential_version,
+                attempt_no,
+                email_domain or None,
+                register_completed_at,
+                created_at,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("credit4u_credentials saved customer_key=%s", customer_key[:12])
+    return customer_key
+
+
+def load_credit4u_credentials(customer: dict[str, Any]) -> dict[str, Any] | None:
+    """저장된 신용정보원 계정 복원(비밀번호 평문은 메모리에서만)."""
+    try:
+        customer_key = make_customer_key(customer)
+    except PersistentStoreConfigError:
+        return None
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT credit4u_id, password_encrypted, credential_source, credential_version,
+                   id_attempt_no, email_domain, register_completed_at, updated_at
+            FROM credit4u_credentials
+            WHERE customer_key = ?
+            """,
+            (customer_key,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    try:
+        password = decrypt_credit4u_password_ciphertext(str(row[1] or ""))
+    except (PersistentStoreConfigError, ValueError):
+        return None
+    return {
+        "id": str(row[0] or "").strip(),
+        "password": password,
+        "source": str(row[2] or CREDENTIAL_SOURCE_GENERATED).strip(),
+        "generated": str(row[2] or "") == CREDENTIAL_SOURCE_GENERATED,
+        "credential_version": str(row[3] or "v1").strip() or "v1",
+        "credit4u_id_attempt_no": int(row[4] or 0),
+        "email_domain": str(row[5] or "").strip(),
+        "register_completed_at": str(row[6] or "").strip(),
+        "stored_updated_at": str(row[7] or "").strip(),
+        "restored_from_store": True,
+    }
+
+
+def has_stored_credit4u_credentials(customer: dict[str, Any]) -> bool:
+    if not is_search_hash_secret_configured():
+        return False
+    return load_credit4u_credentials(customer) is not None
+
+
+def save_insurance_records(
+    customer: dict[str, Any],
+    flow_id: str,
+    raw_response: Any,
+    normalized_records: list[dict[str, Any]],
+    normalized_summary: dict[str, Any],
+    *,
+    source: str = INSURANCE_SOURCE_CODEF_CREDIT4U,
+) -> str:
+    """보험가입이력 원부·정규화 결과 저장."""
+    customer_key = make_customer_key(customer)
+    save_customer(customer)
+    now = _utc_now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            INSERT INTO insurance_records (
+                customer_key, flow_id, raw_response_json, normalized_json,
+                summary_json, source, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_key,
+                flow_id,
+                json.dumps(raw_response, ensure_ascii=False),
+                json.dumps(normalized_records, ensure_ascii=False),
+                json.dumps(normalized_summary, ensure_ascii=False),
+                source,
+                now,
+            ),
+        )
+        conn.commit()
+        upsert_customer_flow(flow_id, customer_key, current_step=4)
+    finally:
+        conn.close()
+    logger.info(
+        "insurance_records saved flow_id=%s records=%s",
+        flow_id,
+        len(normalized_records),
+    )
+    return customer_key
+
+
+def load_latest_insurance_records(customer: dict[str, Any]) -> dict[str, Any] | None:
+    """고객별 최신 보험가입이력 저장본."""
+    try:
+        customer_key = make_customer_key(customer)
+    except PersistentStoreConfigError:
+        return None
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            """
+            SELECT flow_id, raw_response_json, normalized_json, summary_json, source, created_at
+            FROM insurance_records
+            WHERE customer_key = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (customer_key,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    return {
+        "flow_id": row[0],
+        "raw_response": json.loads(row[1] or "{}"),
+        "normalized_records": json.loads(row[2] or "[]"),
+        "summary": json.loads(row[3] or "{}"),
+        "source": row[4],
+        "created_at": row[5],
+    }
+
+
 def get_storage_health() -> dict[str, Any]:
     """DEBUG용 DB 상태(민감정보 없음)."""
     ensure_storage()
     exists = DB_PATH.is_file()
     customers_count = 0
     medical_records_count = 0
+    credit4u_credentials_count = 0
+    insurance_records_count = 0
     latest_medical_created_at: str | None = None
+    latest_insurance_created_at: str | None = None
     if exists:
         conn = sqlite3.connect(DB_PATH)
         try:
@@ -299,11 +580,20 @@ def get_storage_health() -> dict[str, Any]:
             customers_count = int(row[0] or 0) if row else 0
             row = conn.execute("SELECT COUNT(*) FROM medical_records").fetchone()
             medical_records_count = int(row[0] or 0) if row else 0
+            row = conn.execute("SELECT COUNT(*) FROM credit4u_credentials").fetchone()
+            credit4u_credentials_count = int(row[0] or 0) if row else 0
+            row = conn.execute("SELECT COUNT(*) FROM insurance_records").fetchone()
+            insurance_records_count = int(row[0] or 0) if row else 0
             row = conn.execute(
                 "SELECT created_at FROM medical_records ORDER BY created_at DESC, id DESC LIMIT 1"
             ).fetchone()
             if row and row[0]:
                 latest_medical_created_at = str(row[0])
+            row = conn.execute(
+                "SELECT created_at FROM insurance_records ORDER BY created_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if row and row[0]:
+                latest_insurance_created_at = str(row[0])
         finally:
             conn.close()
     return {
@@ -311,6 +601,9 @@ def get_storage_health() -> dict[str, Any]:
         "db_exists": exists,
         "customers_count": customers_count,
         "medical_records_count": medical_records_count,
+        "credit4u_credentials_count": credit4u_credentials_count,
+        "insurance_records_count": insurance_records_count,
         "latest_medical_created_at": latest_medical_created_at or "—",
+        "latest_insurance_created_at": latest_insurance_created_at or "—",
         "search_hash_secret_configured": is_search_hash_secret_configured(),
     }

@@ -13,6 +13,11 @@ class Credit4uConfigError(Exception):
     """신용정보원 연동 설정 오류."""
 
 
+# 생성 알고리즘 버전 — 변경 시 DB 저장본 마이그레이션·버전 상향 필수.
+# v1 규칙(고정): ID = prefix(rr) + HMAC digest 앞 8자(총 10자),
+# attempt_no=0이면 동일 고객·secret마다 항상 동일 ID/PW, attempt_no>0은 회원가입 재시도 전용.
+CREDIT4U_CREDENTIAL_VERSION = "v1"
+
 _ID_PATTERN = re.compile(r"^[a-zA-Z0-9]+$")
 
 
@@ -36,6 +41,19 @@ def _canonical_customer_payload(customer: dict[str, Any]) -> str:
 
 def _hmac_digest(customer: dict[str, Any], secret: str) -> str:
     payload = _canonical_customer_payload(customer)
+    return hmac.new(
+        secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _hmac_digest_with_attempt(
+    customer: dict[str, Any],
+    secret: str,
+    attempt_no: int,
+) -> str:
+    payload = f"{_canonical_customer_payload(customer)}|attempt:{int(attempt_no)}"
     return hmac.new(
         secret.encode("utf-8"),
         payload.encode("utf-8"),
@@ -92,10 +110,91 @@ def _assert_credit4u_credentials(user_id: str, password: str) -> None:
         raise ValueError("신용정보원 비밀번호 생성 규칙을 확인해야 합니다.")
 
 
-def generate_credit4u_credentials(customer: dict[str, Any]) -> dict[str, str]:
+def password_contains_user_id(password: str, user_id: str) -> bool:
+    """비밀번호에 아이디가 포함되면 True."""
+    uid = (user_id or "").strip().lower()
+    if not uid or len(uid) < 3:
+        return False
+    return uid in (password or "").lower()
+
+
+def _credentials_from_attempt_digest(
+    customer: dict[str, Any],
+    secret: str,
+    attempt_no: int,
+    *,
+    previous_id: str | None = None,
+) -> dict[str, str]:
+    digest = _hmac_digest_with_attempt(customer, secret, attempt_no)
+    user_id = _build_credit4u_id(digest, get_credit4u_id_prefix())
+    prev = (previous_id or "").strip()
+    if prev and user_id == prev:
+        digest = _hmac_digest_with_attempt(customer, secret, attempt_no + 1000)
+        user_id = _build_credit4u_id(digest, get_credit4u_id_prefix())
+    password = _build_credit4u_password(digest)
+    if password_contains_user_id(password, user_id):
+        digest = _hmac_digest_with_attempt(customer, secret, attempt_no + 2000)
+        password = _build_credit4u_password(digest)
+    _assert_credit4u_credentials(user_id, password)
+    if password_contains_user_id(password, user_id):
+        raise ValueError("신용정보원 비밀번호에 아이디가 포함되지 않아야 합니다.")
+    return {
+        "id": user_id,
+        "password": password,
+        "credential_version": CREDIT4U_CREDENTIAL_VERSION,
+    }
+
+
+def regenerate_credit4u_credentials(
+    customer: dict[str, Any],
+    attempt_no: int,
+    *,
+    previous_id: str | None = None,
+) -> dict[str, str]:
+    """attempt_no 기준 ID·비밀번호 재생성(이전 ID와 달라야 함)."""
+    secret = get_credit4u_secret()
+    if not secret:
+        raise Credit4uConfigError("REDRIBBON_CREDIT4U_SECRET is not configured")
+    if not isinstance(customer, dict):
+        raise ValueError("customer must be a dict")
+    creds = _credentials_from_attempt_digest(
+        customer, secret, attempt_no, previous_id=previous_id
+    )
+    creds["credential_version"] = CREDIT4U_CREDENTIAL_VERSION
+    return creds
+
+
+def regenerate_credit4u_credentials_for_signup(
+    customer: dict[str, Any],
+    attempt_no: int,
+    *,
+    previous_id: str | None = None,
+) -> dict[str, str]:
+    """register 재시도용 — regenerate_credit4u_credentials 별칭."""
+    return regenerate_credit4u_credentials(
+        customer, attempt_no, previous_id=previous_id
+    )
+
+
+def regenerate_credit4u_id(
+    customer: dict[str, Any],
+    attempt_no: int,
+    *,
+    previous_id: str | None = None,
+) -> str:
+    return regenerate_credit4u_credentials(
+        customer, attempt_no, previous_id=previous_id
+    )["id"]
+
+
+def generate_credit4u_credentials(
+    customer: dict[str, Any],
+    attempt_no: int = 0,
+) -> dict[str, str]:
     """
-    고객별 신용정보원 자동 ID/PW 생성.
-    동일 고객 + 동일 secret이면 항상 동일 결과.
+    고객별 신용정보원 자동 ID/PW 생성(CREDIT4U_CREDENTIAL_VERSION=v1).
+    attempt_no=0: 동일 고객·REDRIBBON_CREDIT4U_SECRET이면 항상 동일 ID/PW.
+    attempt_no>=1: 회원가입 중복·형식 오류 재시도 시에만 사용.
     """
     secret = get_credit4u_secret()
     if not secret:
@@ -110,23 +209,48 @@ def generate_credit4u_credentials(customer: dict[str, Any]) -> dict[str, str]:
     if not all((name, identity, phone)):
         raise ValueError("customer name, identity, and phone are required")
 
-    digest = _hmac_digest(customer, secret)
-    user_id = _build_credit4u_id(digest, get_credit4u_id_prefix())
-    password = _build_credit4u_password(digest)
-    _assert_credit4u_credentials(user_id, password)
-    return {"id": user_id, "password": password}
+    if int(attempt_no) <= 0:
+        digest = _hmac_digest(customer, secret)
+        user_id = _build_credit4u_id(digest, get_credit4u_id_prefix())
+        password = _build_credit4u_password(digest)
+        _assert_credit4u_credentials(user_id, password)
+        return {
+            "id": user_id,
+            "password": password,
+            "credential_version": CREDIT4U_CREDENTIAL_VERSION,
+        }
+
+    creds = _credentials_from_attempt_digest(customer, secret, int(attempt_no))
+    creds["credential_version"] = CREDIT4U_CREDENTIAL_VERSION
+    return creds
+
+
+def mask_email_for_debug(email: str) -> str:
+    """DEBUG용 — 도메인만 표시."""
+    value = (email or "").strip().lower()
+    if "@" not in value:
+        return "—"
+    local, domain = value.rsplit("@", 1)
+    if len(local) <= 1:
+        masked_local = "*"
+    else:
+        masked_local = f"{local[0]}***"
+    return f"{masked_local}@{domain}"
 
 
 def credit4u_credentials_debug(
     user_id: str,
     *,
+    password: str = "",
     credential_source: str = "generated",
 ) -> dict[str, Any]:
-    """DEBUG용 — ID 길이·규칙 충족 여부만(원문·digest 미포함)."""
+    """DEBUG용 — ID/PW 규칙 충족 여부만(원문·digest 미포함)."""
     value = (user_id or "").strip()
+    pw = password or ""
     return {
         "generated_id_length": len(value),
         "generated_id_rule_ok": validate_credit4u_id(value),
+        "generated_password_rule_ok": validate_credit4u_password(pw) if pw else False,
         "credential_source": credential_source or "—",
     }
 
@@ -137,3 +261,35 @@ def mask_credit4u_id(user_id: str) -> str:
     if len(value) <= 4:
         return "****"
     return f"{value[:2]}***{value[-2:]}"
+
+
+def persist_credit4u_credentials(
+    customer: dict[str, Any],
+    credentials: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    """고객별 신용정보원 계정 영구 저장(SQLite, 비밀번호 암호화)."""
+    from services.persistent_store import (
+        PersistentStoreConfigError,
+        save_credit4u_credentials,
+    )
+
+    try:
+        return save_credit4u_credentials(customer, credentials, metadata)
+    except PersistentStoreConfigError:
+        return None
+    except ValueError:
+        return None
+
+
+def restore_credit4u_credentials(customer: dict[str, Any]) -> dict[str, Any] | None:
+    """저장된 신용정보원 계정 복원."""
+    from services.persistent_store import (
+        PersistentStoreConfigError,
+        load_credit4u_credentials,
+    )
+
+    try:
+        return load_credit4u_credentials(customer)
+    except PersistentStoreConfigError:
+        return None

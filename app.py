@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +26,9 @@ from fastapi.templating import Jinja2Templates
 
 from services.credit4u_client import (
     extract_credit4u_insurance_records,
+    is_credit4u_already_registered,
     is_credit4u_existing_account_required,
+    is_credit4u_register_required,
     post_credit4u_contract_info_first,
     post_credit4u_contract_info_second,
     is_credit4u_register_completed,
@@ -32,19 +36,47 @@ from services.credit4u_client import (
     is_register_signup_retry_code,
     post_credit4u_register_first,
     build_credit4u_register_first_payload,
+    credit4u_register_payload_timeout_value,
+    ensure_credit4u_check_param_uuid,
+    allowed_credit4u_email_domains_display,
+    extra_info_requests_signup_info,
     extract_register_extra_info,
+    is_register_signup_auto_retry_code,
+    is_register_signup_email_manual_code,
+    register_extra_reason_for_display,
+    register_signup_retry_message,
+    resolve_signup_required_fields,
+    signup_auto_retry_reason_label,
+    store_register_extra_info_on_entry,
+    is_credit4u_email_domain_allowed,
+    is_credit4u_register_timeout_retryable,
+    validate_credit4u_email_for_register,
+    new_register_signup_timing_debug,
     post_credit4u_register_second,
+    extra_info_has_request_key,
+    extra_info_requests_email_auth,
+    extra_info_requests_sms,
+    register_followup_stage_message,
     register_req_secure_no,
     resolve_register_stage,
+    resolve_register_stage_from_followup,
     sanitize_credit4u_two_way_info,
     user_message_for_credit4u_failure,
 )
 from services.credit4u_identity import (
+    CREDIT4U_CREDENTIAL_VERSION,
     Credit4uConfigError,
     credit4u_credentials_debug,
     generate_credit4u_credentials,
     get_credit4u_secret,
     mask_credit4u_id,
+    password_contains_user_id,
+    mask_email_for_debug,
+    persist_credit4u_credentials,
+    regenerate_credit4u_credentials,
+    regenerate_credit4u_credentials_for_signup,
+    restore_credit4u_credentials,
+    validate_credit4u_id,
 )
 from services.insurance_summary import (
     build_insurance_company_groups,
@@ -74,9 +106,12 @@ from services.persistent_store import (  # noqa: E402
     get_storage_health,
     has_medical_records,
     is_search_hash_secret_configured,
+    has_stored_credit4u_credentials,
+    load_latest_insurance_records,
     load_latest_medical_records,
     normalize_customer_fields,
     save_customer,
+    save_insurance_records,
     save_medical_records,
     upsert_customer_flow,
 )
@@ -880,8 +915,20 @@ _INSURANCE_SAMPLE_RECORDS: list[dict[str, Any]] = [
 ]
 
 
-def _provision_credit4u_credentials(entry: dict[str, Any]) -> None:
-    """고객 flow에 신용정보원 자동 계정 생성(시크릿 없으면 오류만 기록, 화면은 막지 않음)."""
+def _signup_auto_retry_max() -> int:
+    raw = (os.getenv("CREDIT4U_SIGNUP_AUTO_RETRY_MAX") or "3").strip()
+    try:
+        return max(0, min(10, int(raw)))
+    except ValueError:
+        return 3
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _ensure_credit4u_credentials_for_entry(entry: dict[str, Any]) -> None:
+    """신용정보원 계정: 저장본 → FLOW_STORE → 신규 생성."""
     entry.pop("credit4u_credentials_error", None)
     customer = entry.get("customer") or {}
     if not all(
@@ -892,12 +939,43 @@ def _provision_credit4u_credentials(entry: dict[str, Any]) -> None:
         )
     ):
         return
+
+    entry["stored_credit4u_credentials_exists"] = False
+    if is_search_hash_secret_configured():
+        restored = restore_credit4u_credentials(customer)
+        if isinstance(restored, dict) and str(restored.get("id") or "").strip():
+            stored_source = str(restored.get("source") or "stored").strip()
+            entry["credit4u_credentials"] = {
+                "id": restored["id"],
+                "password": restored["password"],
+                "generated": stored_source in ("generated", "stored"),
+                "source": "stored",
+                "credential_version": str(
+                    restored.get("credential_version") or CREDIT4U_CREDENTIAL_VERSION
+                ),
+            }
+            entry["credential_source"] = stored_source
+            entry["credential_version"] = entry["credit4u_credentials"]["credential_version"]
+            entry["credit4u_id_attempt_no"] = int(restored.get("credit4u_id_attempt_no") or 0)
+            entry["credit4u_credentials_restored"] = True
+            entry["stored_credit4u_credentials_exists"] = True
+            return
+
+    existing = entry.get("credit4u_credentials")
+    if isinstance(existing, dict) and str(existing.get("id") or "").strip():
+        if str(existing.get("password") or "").strip():
+            return
+
     if not get_credit4u_secret():
         entry["credit4u_credentials_error"] = "REDRIBBON_CREDIT4U_SECRET 설정 필요"
         entry.pop("credit4u_credentials", None)
         return
     try:
-        creds = generate_credit4u_credentials(customer)
+        attempt = int(entry.get("credit4u_id_attempt_no") or 0)
+        if attempt > 0:
+            creds = regenerate_credit4u_credentials(customer, attempt)
+        else:
+            creds = generate_credit4u_credentials(customer)
     except Credit4uConfigError:
         entry["credit4u_credentials_error"] = "REDRIBBON_CREDIT4U_SECRET 설정 필요"
         entry.pop("credit4u_credentials", None)
@@ -911,7 +989,17 @@ def _provision_credit4u_credentials(entry: dict[str, Any]) -> None:
         "password": creds["password"],
         "generated": True,
         "source": "generated",
+        "credential_version": str(
+            creds.get("credential_version") or CREDIT4U_CREDENTIAL_VERSION
+        ),
     }
+    entry["credential_source"] = "generated"
+    entry["credential_version"] = entry["credit4u_credentials"]["credential_version"]
+
+
+def _provision_credit4u_credentials(entry: dict[str, Any]) -> None:
+    """고객 flow에 신용정보원 계정 준비(저장본 우선)."""
+    _ensure_credit4u_credentials_for_entry(entry)
 
 
 def _credit4u_credentials_view_context(entry: dict[str, Any]) -> dict[str, Any]:
@@ -967,14 +1055,163 @@ def _store_credit4u_payload_debug(entry: dict[str, Any], api_result: dict[str, A
 def _store_credit4u_register_debug(entry: dict[str, Any], api_result: dict[str, Any]) -> None:
     register_debug = api_result.get("register_debug")
     if isinstance(register_debug, dict):
+        signup_timing = entry.get("credit4u_register_signup_timing")
+        if isinstance(signup_timing, dict):
+            register_debug = {**register_debug, **signup_timing}
         entry["credit4u_register_debug"] = register_debug
+
+
+def _resolve_entry_flow_id(entry: dict[str, Any], flow_id: str | None = None) -> str:
+    """FLOW_STORE 항목에 대응하는 flow_id."""
+    if flow_id:
+        entry["flow_id"] = flow_id
+        return flow_id
+    stored = str(entry.get("flow_id") or "").strip()
+    if stored:
+        return stored
+    for fid, stored_entry in FLOW_STORE.items():
+        if stored_entry is entry:
+            entry["flow_id"] = fid
+            return fid
+    return ""
+
+
+def _ensure_register_first_payload(
+    entry: dict[str, Any],
+    flow_id: str,
+) -> dict[str, Any]:
+    """저장된 register 1차 payload 반환(없으면 재생성, checkParamUUID 보강)."""
+    check_uuid = ensure_credit4u_check_param_uuid(entry, flow_id)
+    first_payload = entry.get("credit4u_register_first_payload")
+    if isinstance(first_payload, dict) and first_payload:
+        merged = dict(first_payload)
+        if not str(merged.get("checkParamUUID") or "").strip():
+            merged["checkParamUUID"] = check_uuid
+        merged["timeout"] = credit4u_register_payload_timeout_value()
+        entry["credit4u_register_first_payload"] = merged
+        return merged
+    customer = entry.get("customer") or {}
+    credentials = entry.get("credit4u_credentials") or {}
+    built = build_credit4u_register_first_payload(customer, credentials, check_uuid)
+    entry["credit4u_register_first_payload"] = dict(built)
+    return built
+
+
+def _start_credit4u_register(
+    entry: dict[str, Any],
+    flow_id: str | None = None,
+) -> None:
+    """신용정보원 register 1차 자동 시작(CF-12832 등)."""
+    customer = entry.get("customer") or {}
+    if not customer:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = "고객 정보가 없어 회원가입을 진행할 수 없습니다."
+        return
+
+    credentials = entry.get("credit4u_credentials")
+    if not isinstance(credentials, dict) or not str(credentials.get("id") or "").strip():
+        _provision_credit4u_credentials(entry)
+        credentials = entry.get("credit4u_credentials")
+    if not isinstance(credentials, dict) or not str(credentials.get("id") or "").strip():
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = "신용정보원 조회 계정이 준비되지 않았습니다."
+        return
+
+    entry["insurance_status"] = "in_progress"
+    entry["credit4u_current_flow"] = "register"
+    entry["insurance_stage"] = "register_requesting"
+    entry["credit4u_current_request_status"] = "register_requesting"
+    entry["insurance_message"] = (
+        "신용정보원 회원가입 절차를 시작하고 있습니다. 잠시만 기다려 주세요."
+    )
+    entry.pop("insurance_error_code", None)
+
+    fid = _resolve_entry_flow_id(entry, flow_id)
+    if not fid:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = "흐름 ID를 확인할 수 없어 회원가입을 진행할 수 없습니다."
+        return
+
+    check_uuid = ensure_credit4u_check_param_uuid(entry, fid)
+    api_result = post_credit4u_register_first(customer, credentials, check_uuid)
+    _apply_credit4u_register_first_response(entry, api_result)
+
+
+def _set_insurance_submitting(
+    entry: dict[str, Any],
+    stage: str,
+    message: str,
+) -> None:
+    prior = str(entry.get("insurance_stage") or "")
+    if prior and prior not in (
+        "register_signup_info_submitting",
+        "register_sms_submitting",
+        "register_secure_no_submitting",
+        "register_email_auth_submitting",
+        "register_requesting",
+    ):
+        entry["credit4u_last_register_stage"] = prior
+    entry["insurance_status"] = "in_progress"
+    entry["insurance_stage"] = stage
+    entry["credit4u_current_request_status"] = stage
+    entry["insurance_message"] = message
+
+
+def _apply_credit4u_register_retryable_timeout(
+    entry: dict[str, Any],
+    result_code: str,
+    result_message: str,
+) -> None:
+    """CF-01004 — 회원가입 단계 유지(twoWayInfo·payload 삭제 금지)."""
+    entry["insurance_status"] = "in_progress"
+    entry["credit4u_current_flow"] = "register"
+    entry["insurance_stage"] = "register_retryable_timeout"
+    entry["credit4u_current_request_status"] = "register_retryable_timeout"
+    entry["insurance_message"] = _register_stage_user_message("register_retryable_timeout")
+    entry["credit4u_result_code"] = result_code
+    entry["credit4u_result_message"] = result_message
+    entry.pop("insurance_error_code", None)
+
+
+def _resolve_register_retry_stage(entry: dict[str, Any]) -> str:
+    """저장된 extraInfo 기준 재시도 입력 단계."""
+    extra_info = entry.get("credit4u_register_extra_info")
+    if not isinstance(extra_info, dict):
+        extra_info = {}
+    if extra_info_requests_signup_info(extra_info):
+        return "register_signup_info_required"
+    if extra_info_requests_email_auth(extra_info):
+        return "register_email_auth_required"
+    if extra_info_requests_sms(extra_info):
+        return "register_sms_required"
+    if extra_info_has_request_key(extra_info, "reqSecureNo"):
+        return "register_secure_no_required"
+    return "register_signup_info_required"
 
 
 def _register_stage_user_message(stage: str) -> str:
     messages = {
+        "register_requesting": (
+            "신용정보원 회원가입 절차를 시작하고 있습니다. 잠시만 기다려 주세요."
+        ),
         "register_secure_no_required": "회원가입을 위한 보안문자 입력이 필요합니다.",
-        "register_secure_no_submitting": "회원가입 보안문자를 확인하고 있습니다.",
+        "register_secure_no_submitting": (
+            "회원가입 보안문자를 확인하고 있습니다. 잠시만 기다려 주세요."
+        ),
+        "register_sms_submitting": "SMS 인증번호를 확인하고 있습니다. 잠시만 기다려 주세요.",
         "register_sms_required": "휴대폰 SMS 인증번호를 입력해 주세요.",
+        "register_signup_info_submitting": (
+            "회원가입 정보를 제출하고 있습니다. 신용정보원 응답을 기다리는 중입니다. 창을 닫지 마세요."
+        ),
+        "register_retryable_timeout": (
+            "신용정보원 응답 대기시간이 초과되었습니다. 현재 단계에서 다시 시도해 주세요."
+        ),
+        "register_email_auth_submitting": (
+            "이메일 인증번호를 확인하고 있습니다. 잠시만 기다려 주세요."
+        ),
         "register_signup_info_required": (
             "회원가입에 사용할 아이디, 비밀번호, 이메일 정보가 필요합니다."
         ),
@@ -1008,12 +1245,372 @@ def _update_credit4u_register_session(
         two_way = sanitize_credit4u_two_way_info(two_way)
         entry["credit4u_register_two_way_info"] = two_way
     entry["credit4u_register_extra_info"] = extra_info
+    store_register_extra_info_on_entry(entry, extra_info)
     return data, extracted, extra_info
+
+
+def _apply_register_signup_stage_from_extra(
+    entry: dict[str, Any],
+    extra_info: dict[str, Any],
+    result_code: str,
+) -> None:
+    """register_signup_info_required 단계 — extraInfo 요청 필드별 안내."""
+    required = resolve_signup_required_fields(extra_info)
+    entry["insurance_status"] = "in_progress"
+    entry["credit4u_current_flow"] = "register"
+    entry["insurance_stage"] = "register_signup_info_required"
+    entry["credit4u_current_request_status"] = "register_signup_info_required"
+    if required:
+        entry["credit4u_signup_required_fields"] = required
+    else:
+        entry.pop("credit4u_signup_required_fields", None)
+    entry["credit4u_signup_id_retry"] = "id" in required
+    entry["insurance_message"] = register_signup_retry_message(result_code, extra_info)
+    entry.pop("insurance_error_code", None)
+
+
+def _regenerate_credit4u_signup_credentials(entry: dict[str, Any]) -> None:
+    """회원가입 ID·비밀번호 재생성(attempt 증가, checkParamUUID/twoWayInfo 유지)."""
+    customer = entry.get("customer") or {}
+    creds = dict(entry.get("credit4u_credentials") or {})
+    prev_id = str(creds.get("id") or "").strip()
+    attempt = int(entry.get("credit4u_id_attempt_no") or 0) + 1
+    entry["credit4u_id_attempt_no"] = attempt
+
+    renewed = regenerate_credit4u_credentials(
+        customer, attempt, previous_id=prev_id or None
+    )
+    entry["credit4u_credentials"] = {
+        **creds,
+        "id": renewed["id"],
+        "password": renewed["password"],
+        "generated": True,
+        "source": "generated",
+    }
+    required = list(entry.get("credit4u_signup_required_fields") or [])
+    if "id" not in required and entry.get("credit4u_signup_id_retry"):
+        required = ["id", *required]
+    entry["credit4u_signup_required_fields"] = required or ["id"]
+    entry["credit4u_signup_id_retry"] = True
+
+
+def _flow_has_usable_credit4u_credentials(entry: dict[str, Any]) -> bool:
+    creds = entry.get("credit4u_credentials") or {}
+    return bool(
+        str(creds.get("id") or "").strip() and str(creds.get("password") or "").strip()
+    )
+
+
+def _load_stored_credit4u_credentials_into_entry(entry: dict[str, Any]) -> bool:
+    """DB 저장본을 FLOW_STORE에 로드."""
+    customer = entry.get("customer") or {}
+    if not is_search_hash_secret_configured():
+        return False
+    restored = restore_credit4u_credentials(customer)
+    if not isinstance(restored, dict) or not str(restored.get("id") or "").strip():
+        return False
+    if not str(restored.get("password") or "").strip():
+        return False
+    stored_source = str(restored.get("source") or "stored").strip()
+    entry["credit4u_credentials"] = {
+        "id": restored["id"],
+        "password": restored["password"],
+        "generated": stored_source in ("generated", "stored"),
+        "source": "stored",
+        "credential_version": str(
+            restored.get("credential_version") or CREDIT4U_CREDENTIAL_VERSION
+        ),
+    }
+    entry["credential_source"] = "stored"
+    entry["credential_version"] = entry["credit4u_credentials"]["credential_version"]
+    entry["credit4u_id_attempt_no"] = int(restored.get("credit4u_id_attempt_no") or 0)
+    entry["stored_credit4u_credentials_exists"] = True
+    entry["credit4u_credentials_restored"] = True
+    return True
+
+
+def _save_credit4u_credentials_to_store(entry: dict[str, Any]) -> bool:
+    """회원가입 완료 등 최종 확정 계정을 고객별 저장."""
+    entry.pop("credential_save_error", None)
+    customer = entry.get("customer") or {}
+    creds = entry.get("credit4u_credentials") or {}
+    user_id = str(creds.get("id") or "").strip()
+    password = str(creds.get("password") or "").strip()
+    if not user_id or not password:
+        entry["credit4u_credentials_saved"] = False
+        entry["credential_save_error"] = "missing_id_or_password"
+        return False
+    email = str(
+        entry.get("credit4u_signup_email") or entry.get("credit4u_register_email") or ""
+    ).strip()
+    metadata = {
+        "credential_source": str(creds.get("source") or "generated"),
+        "credential_version": str(
+            creds.get("credential_version")
+            or entry.get("credential_version")
+            or CREDIT4U_CREDENTIAL_VERSION
+        ),
+        "credit4u_id_attempt_no": int(entry.get("credit4u_id_attempt_no") or 0),
+        "email": email,
+        "register_completed_at": _utc_now_iso(),
+    }
+    try:
+        customer_key = persist_credit4u_credentials(customer, creds, metadata)
+    except Exception as exc:
+        entry["credit4u_credentials_saved"] = False
+        entry["credential_save_error"] = type(exc).__name__
+        logger.warning(
+            "credit4u_credentials save failed err=%s",
+            type(exc).__name__,
+        )
+        return False
+    entry["credit4u_credentials_saved"] = bool(customer_key)
+    if customer_key:
+        entry["customer_key"] = customer_key
+        entry["stored_credit4u_credentials_exists"] = True
+    return bool(customer_key)
+
+
+def _start_contract_after_already_registered(flow_id: str, entry: dict[str, Any]) -> None:
+    """CF-12069 처리 후 contract-info 자동 시작(무한 반복 방지)."""
+    if entry.get("already_registered_auto_contract_started"):
+        return
+    if not flow_id:
+        return
+    entry["already_registered_auto_contract_started"] = True
+    try:
+        entry["insurance_contract_auto_started"] = "예"
+        _start_credit4u_contract_info_first(flow_id, entry)
+        entry["insurance_contract_result_code"] = str(entry.get("credit4u_result_code") or "")
+    except (Credit4uConfigError, ValueError) as exc:
+        entry["insurance_stage"] = "already_registered"
+        entry["credit4u_current_request_status"] = "already_registered"
+        entry["insurance_message"] = (
+            "이미 신용정보원에 가입된 고객입니다. "
+            f"보험가입이력 자동 조회를 시작하지 못했습니다. ({exc})"
+        )
+
+
+def _apply_credit4u_already_registered(
+    flow_id: str,
+    entry: dict[str, Any],
+    result_message: str,
+) -> None:
+    """CF-12069 — 이미 가입된 고객: 회원가입 재시도 없이 contract-info로 전환."""
+    entry["insurance_status"] = "in_progress"
+    entry["insurance_stage"] = "already_registered"
+    entry["credit4u_current_request_status"] = "already_registered"
+    entry["credit4u_current_flow"] = "contract"
+    entry["insurance_message"] = (
+        "이미 신용정보원에 가입된 고객입니다. 저장된 계정정보로 보험가입이력을 조회합니다."
+    )
+    entry["credit4u_result_code"] = "CF-12069"
+    entry["credit4u_result_message"] = result_message
+    entry["already_registered_handled"] = True
+    entry.pop("insurance_error_code", None)
+
+    fid = _resolve_entry_flow_id(entry, flow_id)
+
+    if entry.get("already_registered_auto_contract_started"):
+        return
+
+    if _load_stored_credit4u_credentials_into_entry(entry):
+        _start_contract_after_already_registered(fid, entry)
+        return
+
+    if _flow_has_usable_credit4u_credentials(entry):
+        _save_credit4u_credentials_to_store(entry)
+        _start_contract_after_already_registered(fid, entry)
+        return
+
+    entry["insurance_stage"] = "existing_account_required"
+    entry["credit4u_current_request_status"] = "existing_account_required"
+    entry["insurance_message"] = (
+        "이미 신용정보원에 가입된 고객입니다. "
+        "기존 신용정보원 아이디와 비밀번호를 입력해 주세요."
+    )
+
+
+def _handle_credit4u_already_registered(
+    entry: dict[str, Any],
+    result_code: str,
+    result_message: str,
+    *,
+    flow_id: str | None = None,
+) -> bool:
+    if not is_credit4u_already_registered(result_code):
+        return False
+    _apply_credit4u_already_registered(
+        flow_id or _resolve_entry_flow_id(entry, flow_id),
+        entry,
+        result_message,
+    )
+    return True
+
+
+def _persist_insurance_records_to_sqlite(
+    flow_id: str,
+    entry: dict[str, Any],
+    raw_data: dict[str, Any],
+) -> None:
+    """contract-info 성공 원부 SQLite 저장."""
+    customer = entry.get("customer") or {}
+    if not is_search_hash_secret_configured():
+        entry["insurance_records_saved"] = False
+        return
+    normalized = list(entry.get("insurance_records") or [])
+    summary = entry.get("insurance_summary") or insurance_summary_from_records(normalized)
+    try:
+        save_insurance_records(customer, flow_id, raw_data, normalized, summary)
+        entry["insurance_records_saved"] = True
+    except PersistentStoreConfigError:
+        entry["insurance_records_saved"] = False
+    except Exception as exc:
+        entry["insurance_records_saved"] = False
+        logger.warning(
+            "insurance_records not saved flow_id=%s err=%s",
+            flow_id,
+            type(exc).__name__,
+        )
+
+
+def _post_register_signup_info_sync(entry: dict[str, Any], flow_id: str) -> dict[str, Any]:
+    """signup_info 2차 POST(서버 내부 자동 재시도용)."""
+    credentials = entry.get("credit4u_credentials") or {}
+    user_id = str(credentials.get("id") or "").strip()
+    password = str(credentials.get("password") or "").strip()
+    email_input = str(
+        entry.get("credit4u_signup_email") or entry.get("credit4u_register_email") or ""
+    ).strip()
+    if not user_id or not password or not email_input:
+        raise ValueError("signup_info fields incomplete")
+
+    first_payload = _ensure_register_first_payload(entry, flow_id)
+    two_way_info = entry.get("credit4u_register_two_way_info")
+    if not isinstance(two_way_info, dict) or not two_way_info:
+        raise ValueError("missing register twoWayInfo")
+
+    signup_timing = new_register_signup_timing_debug()
+    signup_timing["register_signup_info_post_entered"] = "예"
+    entry["credit4u_register_signup_timing"] = signup_timing
+    entry["credit4u_register_payload_purpose"] = "signup_info"
+    return post_credit4u_register_second(
+        first_payload,
+        two_way_info,
+        {"id": user_id, "password": password, "email": email_input},
+        purpose="signup_info",
+        signup_timing=signup_timing,
+    )
+
+
+def _attempt_signup_info_auto_retry(
+    entry: dict[str, Any],
+    flow_id: str,
+    result_code: str,
+    extra_info: dict[str, Any],
+) -> bool:
+    """ID·비밀번호 오류 시 자동 재생성 후 signup_info 재제출."""
+    if not is_register_signup_auto_retry_code(result_code):
+        return False
+    if is_register_signup_email_manual_code(result_code):
+        return False
+
+    max_retries = _signup_auto_retry_max()
+    retry_count = int(entry.get("credit4u_auto_retry_count") or 0)
+    if retry_count >= max_retries:
+        return False
+
+    customer = entry.get("customer") or {}
+    creds = dict(entry.get("credit4u_credentials") or {})
+    prev_id = str(creds.get("id") or "").strip()
+    attempt = int(entry.get("credit4u_id_attempt_no") or 0) + 1
+
+    entry["credit4u_auto_retry_count"] = retry_count + 1
+    entry["last_register_extra_code"] = str(
+        extra_info.get("code") or result_code or ""
+    ).strip()
+    entry["auto_retry_reason"] = signup_auto_retry_reason_label(result_code)
+    entry["insurance_status"] = "in_progress"
+    entry["credit4u_current_flow"] = "register"
+    entry["insurance_stage"] = "register_signup_auto_retrying"
+    entry["credit4u_current_request_status"] = "register_signup_auto_retrying"
+    entry["insurance_message"] = (
+        "신용정보원 아이디를 다시 생성해 회원가입 정보를 재제출하고 있습니다."
+    )
+
+    try:
+        renewed = regenerate_credit4u_credentials(
+            customer, attempt, previous_id=prev_id or None
+        )
+    except (Credit4uConfigError, ValueError):
+        return False
+
+    entry["credit4u_id_attempt_no"] = attempt
+    entry["credit4u_credentials"] = {
+        **creds,
+        "id": renewed["id"],
+        "password": renewed["password"],
+        "generated": True,
+        "source": "generated",
+    }
+
+    try:
+        api_result = _post_register_signup_info_sync(entry, flow_id)
+    except (CodefClientError, ValueError):
+        return False
+
+    _apply_credit4u_register_followup_response(entry, api_result, flow_id=flow_id)
+    return True
+
+
+def _on_register_completed(flow_id: str, entry: dict[str, Any]) -> None:
+    """회원가입 완료 → 계정 저장 → contract-info 자동 시작."""
+    entry["credit4u_register_completed"] = True
+    entry.pop("insurance_error_code", None)
+    entry.pop("credit4u_signup_id_retry", None)
+    entry.pop("credit4u_signup_required_fields", None)
+    if not _flow_has_usable_credit4u_credentials(entry):
+        entry["insurance_stage"] = "register_completed"
+        entry["credit4u_current_request_status"] = "register_completed"
+        entry["insurance_message"] = (
+            "회원가입은 완료되었으나 조회 계정 정보가 없습니다. "
+            "기존 신용정보원 아이디와 비밀번호를 입력해 주세요."
+        )
+        entry["insurance_stage"] = "existing_account_required"
+        return
+    _save_credit4u_credentials_to_store(entry)
+    entry["register_completed_auto_contract_started"] = "예"
+    entry["insurance_message"] = (
+        "신용정보원 회원가입이 완료되었습니다. 보험가입이력을 자동 조회하고 있습니다."
+    )
+    entry.pop("credit4u_current_flow", None)
+
+    if not flow_id:
+        entry["insurance_stage"] = "register_completed"
+        entry["credit4u_current_request_status"] = "register_completed"
+        entry["insurance_message"] = (
+            "회원가입은 완료되었으나 보험가입이력 자동 조회를 시작할 수 없습니다."
+        )
+        return
+
+    try:
+        entry["insurance_contract_auto_started"] = "예"
+        _start_credit4u_contract_info_first(flow_id, entry)
+        entry["insurance_contract_result_code"] = str(entry.get("credit4u_result_code") or "")
+    except (Credit4uConfigError, ValueError) as exc:
+        entry["insurance_stage"] = "register_completed"
+        entry["credit4u_current_request_status"] = "register_completed"
+        entry["insurance_message"] = (
+            "신용정보원 회원가입이 완료되었습니다. "
+            f"보험가입이력 자동 조회를 시작하지 못했습니다. ({exc})"
+        )
 
 
 def _apply_credit4u_register_followup_response(
     entry: dict[str, Any],
     api_result: dict[str, Any],
+    *,
+    flow_id: str | None = None,
 ) -> None:
     """register 2차 이상 응답 처리."""
     result_code = str(api_result.get("result_code") or "")
@@ -1024,6 +1621,11 @@ def _apply_credit4u_register_followup_response(
 
     if result_code == "CODEF_PASSWORD_ENCRYPTION_ERROR":
         _apply_codef_password_encryption_failure(entry)
+        return
+
+    if _handle_credit4u_already_registered(
+        entry, result_code, result_message, flow_id=flow_id
+    ):
         return
 
     if api_result.get("status_code") == 0 and result_code == "CLIENT_ERROR":
@@ -1050,13 +1652,36 @@ def _apply_credit4u_register_followup_response(
         result_message = error_message
         entry["credit4u_result_message"] = result_message
 
-    if is_register_signup_retry_code(result_code):
-        entry["insurance_status"] = "in_progress"
-        entry["credit4u_current_flow"] = "register"
-        entry["insurance_stage"] = "register_signup_info_required"
-        entry["insurance_message"] = user_message_for_credit4u_failure(
-            result_code, result_message
-        )
+    if (
+        is_credit4u_register_timeout_retryable(result_code)
+        and entry.get("credit4u_current_flow") == "register"
+    ):
+        _apply_credit4u_register_retryable_timeout(entry, result_code, result_message)
+        return
+
+    fid = _resolve_entry_flow_id(entry, flow_id)
+
+    if is_register_signup_auto_retry_code(result_code):
+        if fid and _attempt_signup_info_auto_retry(entry, fid, result_code, extra_info):
+            return
+        retry_count = int(entry.get("credit4u_auto_retry_count") or 0)
+        if retry_count >= _signup_auto_retry_max():
+            entry["insurance_status"] = "in_progress"
+            entry["credit4u_current_flow"] = "register"
+            entry["insurance_stage"] = "register_signup_info_required"
+            entry["credit4u_current_request_status"] = "register_signup_info_required"
+            entry["insurance_message"] = (
+                "자동 아이디 재생성으로 해결되지 않았습니다. "
+                "다른 아이디를 직접 입력하거나 다시 생성해 주세요."
+            )
+            entry["insurance_error_code"] = result_code
+            return
+
+    if is_register_signup_email_manual_code(result_code) or (
+        is_register_signup_retry_code(result_code)
+        and not is_register_signup_auto_retry_code(result_code)
+    ):
+        _apply_register_signup_stage_from_extra(entry, extra_info, result_code)
         entry["insurance_error_code"] = result_code
         return
 
@@ -1072,38 +1697,77 @@ def _apply_credit4u_register_followup_response(
 
     if api_result.get("completed") or is_credit4u_register_completed(result_code, data):
         entry["insurance_status"] = "in_progress"
-        entry["credit4u_current_flow"] = "register"
-        entry["insurance_stage"] = "register_completed"
-        entry["insurance_message"] = _register_stage_user_message("register_completed")
-        entry["credit4u_register_completed"] = True
-        entry.pop("insurance_error_code", None)
+        _on_register_completed(fid, entry)
         return
 
     if api_result.get("ok"):
         entry["insurance_status"] = "in_progress"
         entry["credit4u_current_flow"] = "register"
-        stage = resolve_register_stage(extra_info, data=data, extracted=extracted)
+        prior_stage = str(entry.get("insurance_stage") or "")
+        stage = resolve_register_stage_from_followup(
+            result_code, data, extra_info, extracted
+        )
+        if stage == "register_continue_pending" and extra_info_requests_signup_info(
+            extra_info
+        ):
+            stage = "register_signup_info_required"
+        sms_retry = prior_stage in (
+            "register_sms_submitting",
+            "register_sms_required",
+        ) and stage == "register_sms_required"
         entry["insurance_stage"] = stage
-        entry["insurance_message"] = _register_stage_user_message(stage)
+        entry["credit4u_current_request_status"] = stage
+        if stage == "register_signup_info_required":
+            extra_code = str(extra_info.get("code") or result_code or "").strip()
+            if (
+                fid
+                and extra_code
+                and is_register_signup_auto_retry_code(extra_code)
+                and _attempt_signup_info_auto_retry(entry, fid, extra_code, extra_info)
+            ):
+                return
+            _apply_register_signup_stage_from_extra(entry, extra_info, result_code)
+        else:
+            entry.pop("credit4u_signup_required_fields", None)
+            entry.pop("credit4u_signup_id_retry", None)
+            entry["insurance_message"] = register_followup_stage_message(
+                stage, sms_retry=sms_retry
+            )
         if stage == "register_secure_no_required":
             entry["credit4u_register_req_secure_no"] = register_req_secure_no(
                 data, extra_info
             )
-        entry.pop("insurance_error_code", None)
+        if stage != "register_signup_info_required":
+            entry.pop("insurance_error_code", None)
         return
 
     status_code = int(api_result.get("status_code") or 0)
     if status_code >= 400 or (result_code and result_code not in ("CF-00000",)):
+        if (
+            is_credit4u_register_timeout_retryable(result_code)
+            and entry.get("credit4u_current_flow") == "register"
+        ):
+            _apply_credit4u_register_retryable_timeout(entry, result_code, result_message)
+            return
         entry["insurance_status"] = "failed"
         entry["insurance_stage"] = "failed"
+        entry["credit4u_current_request_status"] = "failed"
         entry["insurance_message"] = user_message_for_credit4u_failure(
             result_code, result_message
         )
         entry["insurance_error_code"] = result_code
         return
 
+    if (
+        is_credit4u_register_timeout_retryable(result_code)
+        and entry.get("credit4u_current_flow") == "register"
+    ):
+        _apply_credit4u_register_retryable_timeout(entry, result_code, result_message)
+        return
+
     entry["insurance_status"] = "failed"
     entry["insurance_stage"] = "failed"
+    entry["credit4u_current_request_status"] = "failed"
     entry["insurance_message"] = user_message_for_credit4u_failure(
         result_code, result_message
     )
@@ -1125,6 +1789,9 @@ def _apply_credit4u_register_first_response(
 
     if result_code == "CODEF_PASSWORD_ENCRYPTION_ERROR":
         _apply_codef_password_encryption_failure(entry)
+        return
+
+    if _handle_credit4u_already_registered(entry, result_code, result_message):
         return
 
     if api_result.get("status_code") == 0 and result_code == "CLIENT_ERROR":
@@ -1161,11 +1828,23 @@ def _apply_credit4u_register_first_response(
                 "extra_info": extra_info,
             },
         )
-        stage = resolve_register_stage(extra_info, data=data, extracted=extracted)
+        stage = resolve_register_stage_from_followup(
+            result_code, data, extra_info, extracted
+        )
+        if stage == "register_continue_pending" and extra_info_requests_signup_info(
+            extra_info
+        ):
+            stage = "register_signup_info_required"
         entry["insurance_status"] = "in_progress"
         entry["credit4u_current_flow"] = "register"
         entry["insurance_stage"] = stage
-        entry["insurance_message"] = _register_stage_user_message(stage)
+        entry["credit4u_current_request_status"] = stage
+        if stage == "register_signup_info_required":
+            _apply_register_signup_stage_from_extra(entry, extra_info, result_code)
+        else:
+            entry.pop("credit4u_signup_required_fields", None)
+            entry.pop("credit4u_signup_id_retry", None)
+            entry["insurance_message"] = register_followup_stage_message(stage)
         if stage == "register_secure_no_required":
             entry["credit4u_register_req_secure_no"] = register_req_secure_no(
                 data, extra_info
@@ -1175,6 +1854,11 @@ def _apply_credit4u_register_first_response(
 
     status_code = int(api_result.get("status_code") or 0)
     if status_code >= 400 or (result_code and result_code not in ("CF-00000",)):
+        if is_credit4u_register_timeout_retryable(result_code):
+            _apply_credit4u_register_retryable_timeout(entry, result_code, result_message)
+            return
+        if _handle_credit4u_already_registered(entry, result_code, result_message):
+            return
         entry["insurance_status"] = "failed"
         entry["insurance_stage"] = "failed"
         entry["insurance_message"] = user_message_for_credit4u_failure(
@@ -1183,12 +1867,54 @@ def _apply_credit4u_register_first_response(
         entry["insurance_error_code"] = result_code
         return
 
+    if is_credit4u_register_timeout_retryable(result_code):
+        _apply_credit4u_register_retryable_timeout(entry, result_code, result_message)
+        return
+
+    if _handle_credit4u_already_registered(entry, result_code, result_message):
+        return
+
     entry["insurance_status"] = "failed"
     entry["insurance_stage"] = "failed"
     entry["insurance_message"] = user_message_for_credit4u_failure(
         result_code, result_message
     )
     entry["insurance_error_code"] = result_code or "CREDIT4U_REGISTER_FAILED"
+
+
+def _apply_credit4u_register_required(
+    entry: dict[str, Any],
+    *,
+    result_code: str,
+    result_message: str,
+) -> None:
+    """CF-12832 — 저장 계정 우선, 없으면 회원가입 1차 자동 시작."""
+    entry["credit4u_result_code"] = result_code
+    entry["credit4u_result_message"] = result_message
+    entry["credit4u_second_status"] = "idle"
+    entry.pop("insurance_error_code", None)
+    fid = _resolve_entry_flow_id(entry)
+    if fid and _load_stored_credit4u_credentials_into_entry(entry):
+        entry["insurance_status"] = "in_progress"
+        entry["credit4u_current_flow"] = "contract"
+        entry["insurance_message"] = (
+            "저장된 신용정보원 계정으로 보험가입이력을 조회합니다."
+        )
+        try:
+            _start_credit4u_contract_info_first(fid, entry)
+        except (Credit4uConfigError, ValueError):
+            _start_credit4u_register(entry, fid)
+        return
+    if fid and _flow_has_usable_credit4u_credentials(entry):
+        _save_credit4u_credentials_to_store(entry)
+        entry["insurance_status"] = "in_progress"
+        entry["credit4u_current_flow"] = "contract"
+        try:
+            _start_credit4u_contract_info_first(fid, entry)
+        except (Credit4uConfigError, ValueError):
+            _start_credit4u_register(entry, fid)
+        return
+    _start_credit4u_register(entry, fid)
 
 
 def _apply_credit4u_existing_account_required(
@@ -1205,11 +1931,7 @@ def _apply_credit4u_existing_account_required(
 
 
 def _should_show_existing_account_section(entry: dict[str, Any]) -> bool:
-    if entry.get("insurance_error_code") == "CF-09002":
-        return False
     if entry.get("insurance_stage") == "existing_account_required":
-        return True
-    if is_credit4u_existing_account_required(str(entry.get("insurance_error_code") or "")):
         return True
     if _debug_panel() and entry.get("debug_show_existing_account"):
         return True
@@ -1236,6 +1958,9 @@ def _apply_credit4u_contract_info_first_response(
 
     if result_code == "CODEF_PASSWORD_ENCRYPTION_ERROR":
         _apply_codef_password_encryption_failure(entry)
+        return
+
+    if _handle_credit4u_already_registered(entry, result_code, result_message):
         return
 
     if api_result.get("status_code") == 0 and result_code == "CLIENT_ERROR":
@@ -1279,11 +2004,67 @@ def _apply_credit4u_contract_info_first_response(
         entry.pop("insurance_error_code", None)
         return
 
-    status_code = int(api_result.get("status_code") or 0)
+    if is_credit4u_register_required(result_code):
+        if entry.get("credit4u_register_completed"):
+            fid = _resolve_entry_flow_id(entry)
+            post_retry = int(entry.get("credit4u_contract_post_register_retry_count") or 0)
+            if fid and post_retry < 2:
+                entry["credit4u_contract_post_register_retry_count"] = post_retry + 1
+                entry["insurance_status"] = "in_progress"
+                entry["insurance_stage"] = "register_completed_but_contract_retry_needed"
+                entry["credit4u_current_request_status"] = (
+                    "register_completed_but_contract_retry_needed"
+                )
+                entry["insurance_message"] = (
+                    "회원가입 직후 조회가 지연되고 있습니다. 잠시 후 자동 재조회합니다."
+                )
+                time.sleep(2)
+                try:
+                    _start_credit4u_contract_info_first(fid, entry)
+                    entry["insurance_contract_result_code"] = str(
+                        entry.get("credit4u_result_code") or ""
+                    )
+                except (Credit4uConfigError, ValueError):
+                    entry["insurance_stage"] = "register_completed"
+                    entry["insurance_message"] = (
+                        "회원가입은 완료되었으나 보험가입이력 재조회에 실패했습니다."
+                    )
+                return
+        _apply_credit4u_register_required(
+            entry,
+            result_code=result_code,
+            result_message=result_message,
+        )
+        return
+
+    if result_code == "CF-12822":
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_error_code"] = "CF-12822"
+        entry["insurance_message"] = (
+            "보험가입이력 조회 요청값이 부족합니다. 개발자 확인이 필요합니다."
+        )
+        return
+
+    if result_code == "CF-13342":
+        entry["insurance_status"] = "in_progress"
+        entry["insurance_stage"] = "email_required"
+        entry["insurance_message"] = "이메일 확인이 필요합니다."
+        return
+
     if is_credit4u_existing_account_required(result_code):
         _apply_credit4u_existing_account_required(entry, result_code)
         return
+
+    status_code = int(api_result.get("status_code") or 0)
+    data = api_result.get("data") if isinstance(api_result.get("data"), dict) else {}
+    if result_code == "CF-00000" or extract_credit4u_insurance_records(data):
+        _apply_credit4u_insurance_completed(entry, data, flow_id=_resolve_entry_flow_id(entry))
+        return
+
     if status_code >= 400 or (result_code and result_code not in ("CF-00000",)):
+        if _handle_credit4u_already_registered(entry, result_code, result_message):
+            return
         entry["insurance_status"] = "failed"
         entry["insurance_stage"] = "failed"
         entry["insurance_message"] = user_message_for_credit4u_failure(
@@ -1292,6 +2073,10 @@ def _apply_credit4u_contract_info_first_response(
         entry["insurance_error_code"] = result_code
         return
 
+    if _handle_credit4u_already_registered(entry, result_code, result_message):
+        return
+
+    entry["insurance_status"] = "in_progress"
     entry["insurance_stage"] = "credentials_ready"
     entry["insurance_message"] = result_message or "신용정보원 조회 응답을 확인했습니다."
 
@@ -1299,6 +2084,7 @@ def _apply_credit4u_contract_info_first_response(
 def _start_credit4u_contract_info_first(flow_id: str, entry: dict[str, Any]) -> None:
     """준비된 credit4u_credentials로 contract-info 1차 요청."""
     customer = entry.get("customer") or {}
+    _ensure_credit4u_credentials_for_entry(entry)
     credentials = entry.get("credit4u_credentials")
     if not isinstance(credentials, dict):
         raise ValueError("credit4u credentials missing")
@@ -1307,7 +2093,11 @@ def _start_credit4u_contract_info_first(flow_id: str, entry: dict[str, Any]) -> 
 
     entry["insurance_status"] = "in_progress"
     entry["insurance_stage"] = "requesting_contract_info"
-    entry["insurance_message"] = "보험가입이력을 조회하는 중입니다."
+    entry["insurance_message"] = (
+        "신용정보원 회원가입이 완료되었습니다. 보험가입이력을 자동 조회하고 있습니다."
+        if entry.get("credit4u_register_completed")
+        else "신용정보원 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요."
+    )
     entry.pop("insurance_error", None)
     entry.pop("insurance_error_code", None)
 
@@ -1317,6 +2107,7 @@ def _start_credit4u_contract_info_first(flow_id: str, entry: dict[str, Any]) -> 
 
 def _request_insurance_history_start(flow_id: str, entry: dict[str, Any]) -> None:
     """신용정보원 contract-info 1차: 고객등록 시 생성된 계정으로 CODEF 요청."""
+    _ensure_credit4u_credentials_for_entry(entry)
     creds = entry.get("credit4u_credentials")
     if not isinstance(creds, dict) or not str(creds.get("id") or "").strip():
         _provision_credit4u_credentials(entry)
@@ -1328,7 +2119,12 @@ def _request_insurance_history_start(flow_id: str, entry: dict[str, Any]) -> Non
     _start_credit4u_contract_info_first(flow_id, entry)
 
 
-def _apply_credit4u_insurance_completed(entry: dict[str, Any], data: dict[str, Any]) -> None:
+def _apply_credit4u_insurance_completed(
+    entry: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    flow_id: str | None = None,
+) -> None:
     customer = entry.get("customer") or {}
     customer_name = str(customer.get("name") or "")
     raw_records = extract_credit4u_insurance_records(data)
@@ -1338,9 +2134,14 @@ def _apply_credit4u_insurance_completed(entry: dict[str, Any], data: dict[str, A
     entry["insurance_summary"] = insurance_summary_from_records(normalized)
     entry["insurance_records"] = normalized
     entry["insurance_company_groups"] = company_groups
-    entry["insurance_message"] = "보험가입이력 수신이 완료되었습니다."
+    entry["insurance_message"] = "보험가입이력 수신 완료"
     entry["credit4u_second_status"] = "completed"
     entry.pop("insurance_error_code", None)
+    fid = _resolve_entry_flow_id(entry, flow_id)
+    if fid:
+        _persist_insurance_records_to_sqlite(fid, entry, data)
+    if _flow_has_usable_credit4u_credentials(entry):
+        _save_credit4u_credentials_to_store(entry)
 
 
 def _apply_credit4u_contract_info_second_response(
@@ -1357,6 +2158,9 @@ def _apply_credit4u_contract_info_second_response(
 
     if result_code == "CODEF_PASSWORD_ENCRYPTION_ERROR":
         _apply_codef_password_encryption_failure(entry)
+        return
+
+    if _handle_credit4u_already_registered(entry, result_code, result_message):
         return
 
     if api_result.get("status_code") == 0 and result_code == "CLIENT_ERROR":
@@ -1377,15 +2181,12 @@ def _apply_credit4u_contract_info_second_response(
         entry["credit4u_second_status"] = "failed"
         return
 
-    if is_credit4u_existing_account_required(result_code):
-        _apply_credit4u_existing_account_required(entry, result_code)
-        return
-
-    if result_code == "CF-12832":
-        entry["insurance_status"] = "in_progress"
-        entry["insurance_stage"] = "register_required"
-        entry["insurance_message"] = "신용정보원 회원가입이 필요합니다."
-        entry["credit4u_second_status"] = "idle"
+    if is_credit4u_register_required(result_code):
+        _apply_credit4u_register_required(
+            entry,
+            result_code=result_code,
+            result_message=result_message,
+        )
         return
 
     if result_code == "CF-12822":
@@ -1405,8 +2206,17 @@ def _apply_credit4u_contract_info_second_response(
         entry["credit4u_second_status"] = "idle"
         return
 
+    if is_credit4u_existing_account_required(result_code):
+        _apply_credit4u_existing_account_required(entry, result_code)
+        return
+
     if api_result.get("ok"):
-        _apply_credit4u_insurance_completed(entry, data)
+        _apply_credit4u_insurance_completed(
+            entry, data, flow_id=_resolve_entry_flow_id(entry)
+        )
+        return
+
+    if _handle_credit4u_already_registered(entry, result_code, result_message):
         return
 
     entry["insurance_status"] = "failed"
@@ -1457,6 +2267,7 @@ def _clear_insurance_temp_fields(entry: dict[str, Any]) -> None:
         "credit4u_register_secure_no_input",
         "credit4u_register_first_payload",
         "credit4u_register_completed",
+        "credit4u_current_request_status",
         "credit4u_register_sms_auth_no_input",
         "credit4u_register_email",
         "credit4u_register_email_auth_no_input",
@@ -1465,7 +2276,46 @@ def _clear_insurance_temp_fields(entry: dict[str, Any]) -> None:
     entry["credit4u_second_status"] = "idle"
 
 
+def _restore_saved_insurance_records_if_needed(entry: dict[str, Any]) -> None:
+    """SQLite에 저장된 보험 원부를 FLOW_STORE에 복원."""
+    if entry.get("insurance_status") == "completed" and entry.get("insurance_records"):
+        return
+    active_register_stages = {
+        "register_requesting",
+        "register_secure_no_required",
+        "register_sms_required",
+        "register_signup_info_required",
+        "register_signup_info_submitting",
+        "register_signup_auto_retrying",
+        "register_email_auth_required",
+    }
+    if str(entry.get("insurance_stage") or "") in active_register_stages:
+        return
+    customer = entry.get("customer") or {}
+    if not is_search_hash_secret_configured():
+        return
+    saved = load_latest_insurance_records(customer)
+    if not saved:
+        return
+    normalized = list(saved.get("normalized_records") or [])
+    if not normalized:
+        return
+    customer_name = str(customer.get("name") or "")
+    _, company_groups = build_insurance_company_groups(normalized, customer_name)
+    entry["insurance_status"] = "completed"
+    entry["insurance_stage"] = "completed"
+    entry["insurance_records"] = normalized
+    entry["insurance_company_groups"] = company_groups
+    entry["insurance_summary"] = saved.get("summary") or insurance_summary_from_records(
+        normalized
+    )
+    entry["insurance_message"] = "보험가입이력 수신 완료"
+    entry["insurance_records_saved"] = True
+
+
 def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any]:
+    _ensure_credit4u_credentials_for_entry(entry)
+    _restore_saved_insurance_records_if_needed(entry)
     status = entry.get("insurance_status") or "pending"
     customer = entry.get("customer") or {}
     summary = entry.get("insurance_summary") or {"total": 0, "insured_valid": 0, "company_count": 0}
@@ -1491,7 +2341,16 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
     else:
         secure_no_view = _credit4u_secure_no_view(entry.get("credit4u_req_secure_no"))
     creds = entry.get("credit4u_credentials") or {}
-    credential_source = str(creds.get("source") or ("generated" if creds.get("generated") else "—"))
+    credential_source = str(
+        entry.get("credential_source")
+        or creds.get("source")
+        or ("generated" if creds.get("generated") else "—")
+    )
+    credential_version = str(
+        entry.get("credential_version")
+        or creds.get("credential_version")
+        or CREDIT4U_CREDENTIAL_VERSION
+    )
     if _debug_panel():
         payload_debug = entry.get("credit4u_payload_debug") or {}
         register_debug = entry.get("credit4u_register_debug") or {}
@@ -1502,9 +2361,12 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
             "organization_source": payload_debug.get("organization_source") or "—",
             "credit4u_result_code": entry.get("credit4u_result_code") or "—",
             "credit4u_result_message": entry.get("credit4u_result_message") or "—",
-            "credential_source": credential_source,
+            "credential_source": str(
+                entry.get("credential_source") or credential_source
+            ),
             "credit4u_current_flow": entry.get("credit4u_current_flow") or "—",
             "insurance_stage": entry.get("insurance_stage") or "—",
+            "current_request_status": entry.get("insurance_stage") or "—",
             "continue2_way": entry.get("credit4u_continue2_way"),
             "method": entry.get("credit4u_method") or "—",
             "req_secure_no_present": bool(entry.get("credit4u_req_secure_no")),
@@ -1514,14 +2376,131 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
             "register_endpoint": register_debug.get("register_endpoint") or "—",
             "register_payload_keys": register_debug.get("register_payload_keys") or "—",
             "register_extra_info_keys": register_debug.get("register_extra_info_keys") or "—",
+            "register_extra_code": (
+                register_debug.get("register_extra_code")
+                or entry.get("credit4u_register_extra_code")
+                or "—"
+            ),
+            "register_extra_message": (
+                register_debug.get("register_extra_message")
+                or entry.get("credit4u_register_extra_message")
+                or "—"
+            ),
+            "register_error_message": (
+                register_debug.get("register_error_message")
+                or entry.get("credit4u_register_error_message")
+                or "—"
+            ),
+            "credit4u_id_attempt_no": entry.get("credit4u_id_attempt_no", 0),
             "register_two_way_info_saved": bool(entry.get("credit4u_register_two_way_info")),
+            "checkParamUUID_present": register_debug.get("checkParamUUID_present")
+            or (
+                "예"
+                if len(str(entry.get("credit4u_check_param_uuid") or "")) == 20
+                else "아니오"
+            ),
+            "checkParamUUID_length": register_debug.get("checkParamUUID_length")
+            or len(str(entry.get("credit4u_check_param_uuid") or "")),
+            "register_payload_purpose": (
+                register_debug.get("register_payload_purpose")
+                or entry.get("credit4u_register_payload_purpose")
+                or "—"
+            ),
+            "payload_has_checkParamUUID": register_debug.get("payload_has_checkParamUUID")
+            or "—",
+            "payload_has_id": register_debug.get("payload_has_id") or "—",
+            "payload_has_password": register_debug.get("payload_has_password") or "—",
+            "payload_has_email": register_debug.get("payload_has_email") or "—",
+            "payload_has_secureNo": register_debug.get("payload_has_secureNo") or "—",
+            "payload_has_secureNoRefresh": register_debug.get("payload_has_secureNoRefresh")
+            or "—",
+            "payload_has_smsAuthNo": register_debug.get("payload_has_smsAuthNo") or "—",
+            "payload_has_emailAuthNo": register_debug.get("payload_has_emailAuthNo") or "—",
+            "password_encrypted": register_debug.get("password_encrypted") or "—",
+            "current_request_status": (
+                entry.get("credit4u_current_request_status")
+                or entry.get("insurance_stage")
+                or "—"
+            ),
+            "last_register_stage": entry.get("credit4u_last_register_stage") or "—",
+            "email_domain_allowed": (
+                "예"
+                if is_credit4u_email_domain_allowed(
+                    str(entry.get("credit4u_register_email") or entry.get("credit4u_signup_email") or "")
+                )
+                else "아니오"
+            ),
             **credit4u_credentials_debug(
                 str(creds.get("id") or ""),
+                password=str(creds.get("password") or ""),
                 credential_source=credential_source,
             ),
+            "credit4u_signup_required_fields": ", ".join(
+                entry.get("credit4u_signup_required_fields") or []
+            )
+            or "—",
+            "signup_email_domain": mask_email_for_debug(
+                str(
+                    entry.get("credit4u_signup_email")
+                    or entry.get("credit4u_register_email")
+                    or ""
+                )
+            ),
             **codef_password_encryption_debug(),
+            **(entry.get("credit4u_register_signup_timing") or {}),
+            "register_completed_auto_contract_started": (
+                "예" if entry.get("register_completed_auto_contract_started") else "아니오"
+            ),
+            "credit4u_credentials_saved": (
+                "예" if entry.get("credit4u_credentials_saved") else "아니오"
+            ),
+            "stored_credit4u_credentials_exists": (
+                "예"
+                if entry.get("stored_credit4u_credentials_exists")
+                or (
+                    is_search_hash_secret_configured()
+                    and has_stored_credit4u_credentials(customer)
+                )
+                else "아니오"
+            ),
+            "credit4u_auto_retry_count": entry.get("credit4u_auto_retry_count", 0),
+            "last_register_extra_code": entry.get("last_register_extra_code") or "—",
+            "auto_retry_reason": entry.get("auto_retry_reason") or "—",
+            "insurance_contract_auto_started": (
+                "예" if entry.get("insurance_contract_auto_started") else "아니오"
+            ),
+            "insurance_contract_result_code": (
+                entry.get("insurance_contract_result_code")
+                or entry.get("credit4u_result_code")
+                or "—"
+            ),
+            "insurance_records_saved": (
+                "예" if entry.get("insurance_records_saved") else "아니오"
+            ),
+            "credential_version": credential_version,
+            "already_registered_handled": (
+                "예" if entry.get("already_registered_handled") else "아니오"
+            ),
+            "already_registered_auto_contract_started": (
+                "예" if entry.get("already_registered_auto_contract_started") else "아니오"
+            ),
+            "credential_save_error": entry.get("credential_save_error") or "—",
         }
     show_existing_account_section = _should_show_existing_account_section(entry)
+    insurance_stage_value = str(entry.get("insurance_stage") or "")
+    show_credentials_card = bool(
+        _credit4u_credentials_view_context(entry).get("show_credit4u_credentials_card")
+        and insurance_stage_value != "existing_account_required"
+    )
+    creds_view = _credit4u_credentials_view_context(entry)
+    if not show_credentials_card:
+        creds_view = {
+            **creds_view,
+            "show_credit4u_credentials_card": False,
+            "credit4u_id": "",
+            "credit4u_password": "",
+            "credit4u_password_available": False,
+        }
     return {
         "current_step": 4,
         "flow_id": fid,
@@ -1536,10 +2515,27 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
         "insurance_records": records,
         "insurance_company_groups": company_groups,
         "show_existing_account_section": show_existing_account_section,
+        "show_credit4u_credentials_card": show_credentials_card,
         "credit4u_debug": credit4u_debug,
         "credit4u_secure_no": secure_no_view,
-        **_credit4u_credentials_view_context(entry),
-        "credit4u_register_email": str(entry.get("credit4u_register_email") or ""),
+        **creds_view,
+        "credit4u_register_email": str(
+            entry.get("credit4u_signup_email")
+            or entry.get("credit4u_register_email")
+            or ""
+        ),
+        "credit4u_allowed_email_domains": allowed_credit4u_email_domains_display(),
+        "credit4u_signup_id_retry": bool(entry.get("credit4u_signup_id_retry")),
+        "credit4u_signup_required_fields": list(
+            entry.get("credit4u_signup_required_fields") or []
+        ),
+        "credit4u_register_extra_reason": register_extra_reason_for_display(
+            entry.get("credit4u_register_extra_info")
+            if isinstance(entry.get("credit4u_register_extra_info"), dict)
+            else {}
+        )
+        or str(entry.get("credit4u_register_extra_message") or "")
+        or str(entry.get("credit4u_register_error_message") or ""),
     }
 
 
@@ -1920,6 +2916,12 @@ def hospital_insurance_request_get(
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
     if _debug_panel() and (debug_existing or "").strip() == "1":
         entry["debug_show_existing_account"] = True
+    if (
+        entry.get("insurance_stage") == "register_completed"
+        and entry.get("credit4u_register_completed")
+        and not entry.get("insurance_contract_auto_started")
+    ):
+        _on_register_completed(fid, entry)
     return templates.TemplateResponse(
         request,
         "insurance_request.html",
@@ -1936,7 +2938,12 @@ def hospital_insurance_request_start(flow_id: str | None = None):
     entry = FLOW_STORE[fid]
     if entry.get("medical_status") != "completed":
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
-    if entry.get("insurance_status") != "pending":
+    manual_restart = (
+        entry.get("insurance_status") == "pending"
+        or entry.get("insurance_stage") == "register_completed"
+        or entry.get("credit4u_register_completed")
+    )
+    if not manual_restart:
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
     if not get_credit4u_secret():
@@ -1961,18 +2968,25 @@ def hospital_insurance_request_start(flow_id: str | None = None):
         entry["insurance_error_code"] = "MISSING_CUSTOMER_INFO"
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
+    entry["insurance_status"] = "in_progress"
+    entry["insurance_stage"] = "requesting_contract_info"
+    entry["insurance_message"] = (
+        "신용정보원 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요."
+    )
+    entry.pop("insurance_error_code", None)
+
     try:
         _request_insurance_history_start(fid, entry)
     except Credit4uConfigError:
         entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
         entry["insurance_message"] = "보험가입이력 조회 설정값이 필요합니다. (REDRIBBON_CREDIT4U_SECRET)"
         entry["insurance_error_code"] = "MISSING_CREDIT4U_SECRET"
-        entry.pop("insurance_stage", None)
     except ValueError:
         entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
         entry["insurance_message"] = "고객 정보가 부족하여 보험가입이력 조회를 시작할 수 없습니다."
         entry["insurance_error_code"] = "MISSING_CUSTOMER_INFO"
-        entry.pop("insurance_stage", None)
 
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
@@ -1992,7 +3006,9 @@ def hospital_insurance_request_existing_account(
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
     allowed = (
         entry.get("insurance_stage") == "existing_account_required"
+        or entry.get("insurance_stage") == "already_registered"
         or is_credit4u_existing_account_required(str(entry.get("insurance_error_code") or ""))
+        or str(entry.get("credit4u_result_code") or "") == "CF-12069"
         or (_debug_panel() and entry.get("debug_show_existing_account"))
     )
     if not allowed:
@@ -2012,10 +3028,16 @@ def hospital_insurance_request_existing_account(
         "password": account_password,
         "generated": False,
         "source": "existing_account",
+        "credential_version": CREDIT4U_CREDENTIAL_VERSION,
     }
-    entry["insurance_stage"] = "credentials_ready"
+    entry["credential_source"] = "existing_account"
+    entry["credential_version"] = CREDIT4U_CREDENTIAL_VERSION
+    entry["insurance_status"] = "in_progress"
+    entry["credit4u_current_flow"] = "contract"
+    entry["insurance_stage"] = "requesting_contract_info"
+    entry["credit4u_current_request_status"] = "requesting_contract_info"
     entry["insurance_message"] = (
-        "기존 신용정보원 계정정보가 입력되었습니다. 보험가입이력 조회를 진행합니다."
+        "기존 신용정보원 계정으로 보험가입이력을 조회하는 중입니다. 잠시만 기다려 주세요."
     )
     entry.pop("insurance_error_code", None)
 
@@ -2088,8 +3110,11 @@ def hospital_insurance_request_secure_no(
     customer = entry.get("customer") or {}
     entry["credit4u_secure_no_input"] = secure_input
     entry["credit4u_second_status"] = "in_progress"
-    entry["insurance_stage"] = "submitting_secure_no"
-    entry["insurance_message"] = "보안문자를 확인하고 있습니다."
+    _set_insurance_submitting(
+        entry,
+        "submitting_secure_no",
+        "보안문자를 확인하고 있습니다. 잠시만 기다려 주세요.",
+    )
 
     api_result = post_credit4u_contract_info_second(
         customer,
@@ -2103,35 +3128,12 @@ def hospital_insurance_request_secure_no(
 
 @app.post("/hospital/insurance-request/register-start")
 def hospital_insurance_request_register_start(flow_id: str | None = None):
-    """신용정보원 register 1차 요청."""
+    """신용정보원 register 1차 수동 재시도."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
-    if entry.get("insurance_stage") != "register_required":
-        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
-
-    customer = entry.get("customer") or {}
-    if not customer:
-        entry["insurance_status"] = "failed"
-        entry["insurance_stage"] = "failed"
-        entry["insurance_message"] = "고객 정보가 없어 회원가입을 진행할 수 없습니다."
-        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
-
-    credentials = entry.get("credit4u_credentials")
-    if not isinstance(credentials, dict):
-        entry["insurance_status"] = "failed"
-        entry["insurance_stage"] = "failed"
-        entry["insurance_message"] = "신용정보원 조회 계정이 준비되지 않았습니다."
-        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
-
-    entry["insurance_status"] = "in_progress"
-    entry["insurance_stage"] = "register_requesting"
-    entry["insurance_message"] = "신용정보원 회원가입 절차를 시작하고 있습니다."
-    entry.pop("insurance_error_code", None)
-
-    api_result = post_credit4u_register_first(customer, credentials)
-    _apply_credit4u_register_first_response(entry, api_result)
+    _start_credit4u_register(entry, fid)
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
 
@@ -2153,19 +3155,14 @@ def hospital_insurance_request_register_secure_no(
         entry["insurance_message"] = "보안문자를 입력해 주세요."
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
-    first_payload = entry.get("credit4u_register_first_payload")
-    if not isinstance(first_payload, dict) or not first_payload:
-        customer = entry.get("customer") or {}
-        credentials = entry.get("credit4u_credentials") or {}
-        try:
-            first_payload = build_credit4u_register_first_payload(customer, credentials)
-            entry["credit4u_register_first_payload"] = dict(first_payload)
-        except CodefClientError as exc:
-            entry["insurance_status"] = "failed"
-            entry["insurance_stage"] = "failed"
-            entry["insurance_message"] = exc.message
-            entry["insurance_error_code"] = exc.code or "CLIENT_ERROR"
-            return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    try:
+        first_payload = _ensure_register_first_payload(entry, fid)
+    except CodefClientError as exc:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = exc.message
+        entry["insurance_error_code"] = exc.code or "CLIENT_ERROR"
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
     two_way_info = entry.get("credit4u_register_two_way_info")
     if not isinstance(first_payload, dict) or not first_payload:
         entry["insurance_status"] = "failed"
@@ -2181,17 +3178,21 @@ def hospital_insurance_request_register_secure_no(
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
     entry["credit4u_register_secure_no_input"] = True
-    entry["insurance_status"] = "in_progress"
-    entry["insurance_stage"] = "register_secure_no_submitting"
-    entry["insurance_message"] = _register_stage_user_message("register_secure_no_submitting")
+    _set_insurance_submitting(
+        entry,
+        "register_secure_no_submitting",
+        _register_stage_user_message("register_secure_no_submitting"),
+    )
     entry.pop("insurance_error_code", None)
 
+    entry["credit4u_register_payload_purpose"] = "secure_no"
     api_result = post_credit4u_register_second(
         first_payload,
         two_way_info,
         {"secureNo": secure_input, "secureNoRefresh": "0"},
+        purpose="secure_no",
     )
-    _apply_credit4u_register_followup_response(entry, api_result)
+    _apply_credit4u_register_followup_response(entry, api_result, flow_id=fid)
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
 
@@ -2200,16 +3201,80 @@ def hospital_insurance_request_register_sms(
     flow_id: str | None = None,
     smsAuthNo: str = Form(""),
 ):
-    """SMS 인증번호 제출 스텁."""
+    """SMS 인증번호 제출 → register 추가요청."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
     if entry.get("insurance_stage") != "register_sms_required":
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
-    entry["credit4u_register_sms_auth_no_input"] = bool(str(smsAuthNo or "").strip())
+
+    sms_input = str(smsAuthNo or "").strip()
+    if not sms_input:
+        entry["insurance_message"] = "SMS 인증번호를 입력해 주세요."
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    try:
+        first_payload = _ensure_register_first_payload(entry, fid)
+    except CodefClientError as exc:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = exc.message
+        entry["insurance_error_code"] = exc.code or "CLIENT_ERROR"
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    two_way_info = entry.get("credit4u_register_two_way_info")
+    if not isinstance(two_way_info, dict) or not two_way_info:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = "회원가입 인증 정보가 없습니다. 회원가입을 처음부터 다시 시도해 주세요."
+        entry["insurance_error_code"] = "MISSING_REGISTER_TWO_WAY_INFO"
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    entry["credit4u_register_sms_auth_no_input"] = True
+    _set_insurance_submitting(
+        entry,
+        "register_sms_submitting",
+        _register_stage_user_message("register_sms_submitting"),
+    )
+    entry.pop("insurance_error_code", None)
+
+    entry["credit4u_register_payload_purpose"] = "sms"
+    api_result = post_credit4u_register_second(
+        first_payload,
+        two_way_info,
+        {"smsAuthNo": sms_input},
+        purpose="sms",
+    )
+    _apply_credit4u_register_followup_response(entry, api_result, flow_id=fid)
+    return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+
+@app.post("/hospital/insurance-request/register-regenerate-id")
+def hospital_insurance_request_register_regenerate_id(flow_id: str | None = None):
+    """회원가입 아이디 재생성."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if entry.get("credit4u_current_flow") != "register":
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    if not get_credit4u_secret():
+        entry["insurance_message"] = "신용정보원 계정을 재생성할 수 없습니다. 설정을 확인해 주세요."
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    try:
+        _regenerate_credit4u_signup_credentials(entry)
+    except (Credit4uConfigError, ValueError) as exc:
+        entry["insurance_message"] = str(exc) or "아이디를 재생성할 수 없습니다."
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    entry["insurance_status"] = "in_progress"
+    entry["insurance_stage"] = "register_signup_info_required"
+    entry["credit4u_current_request_status"] = "register_signup_info_required"
     entry["insurance_message"] = (
-        "SMS 인증번호가 입력되었습니다. 다음 작업에서 인증 요청을 연결합니다."
+        "새 아이디를 생성했습니다. 회원가입 정보를 다시 제출해 주세요."
     )
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
@@ -2218,18 +3283,126 @@ def hospital_insurance_request_register_sms(
 def hospital_insurance_request_register_signup_info(
     flow_id: str | None = None,
     email: str = Form(""),
+    userId: str = Form(""),
 ):
-    """회원가입 정보(이메일) 제출 스텁."""
+    """회원가입 정보(아이디·비밀번호·이메일) 제출 → register 추가요청."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
+    signup_timing = new_register_signup_timing_debug()
+    signup_timing["register_signup_info_post_entered"] = "예"
+    entry["credit4u_register_signup_timing"] = signup_timing
     if entry.get("insurance_stage") != "register_signup_info_required":
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
-    entry["credit4u_register_email"] = str(email or "").strip()
-    entry["insurance_message"] = (
-        "회원가입 정보가 입력되었습니다. 다음 작업에서 제출 요청을 연결합니다."
+
+    email_input = str(email or "").strip()
+    if not email_input:
+        email_input = str(
+            entry.get("credit4u_signup_email") or entry.get("credit4u_register_email") or ""
+        ).strip()
+    if not email_input:
+        entry["insurance_message"] = "이메일을 입력해 주세요."
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    email_validation_error = validate_credit4u_email_for_register(email_input)
+    if email_validation_error:
+        entry["insurance_status"] = "in_progress"
+        entry["credit4u_current_flow"] = "register"
+        entry["insurance_stage"] = "register_signup_info_required"
+        entry["credit4u_current_request_status"] = "register_signup_info_required"
+        entry["insurance_message"] = email_validation_error
+        entry["credit4u_register_email"] = email_input
+        entry["credit4u_signup_email"] = email_input
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    credentials = entry.get("credit4u_credentials") or {}
+    user_id = str(userId or credentials.get("id") or "").strip()
+    if user_id and not validate_credit4u_id(user_id):
+        entry["insurance_status"] = "in_progress"
+        entry["credit4u_current_flow"] = "register"
+        entry["insurance_stage"] = "register_signup_info_required"
+        entry["credit4u_current_request_status"] = "register_signup_info_required"
+        entry["insurance_message"] = (
+            "아이디는 6~12자의 영문·숫자만 사용할 수 있습니다. "
+            "다른 아이디를 자동 생성하거나 다시 입력해 주세요."
+        )
+        entry["credit4u_signup_id_retry"] = True
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    password = str(credentials.get("password") or "").strip()
+    if password_contains_user_id(password, user_id):
+        try:
+            attempt = int(entry.get("credit4u_id_attempt_no") or 0) + 1
+            renewed = regenerate_credit4u_credentials_for_signup(
+                entry.get("customer") or {},
+                attempt,
+                previous_id=user_id,
+            )
+            entry["credit4u_id_attempt_no"] = attempt
+            entry["credit4u_credentials"] = {
+                **credentials,
+                "id": user_id,
+                "password": renewed["password"],
+                "generated": True,
+                "source": "generated",
+            }
+            password = renewed["password"]
+            entry["insurance_message"] = (
+                "비밀번호에 아이디가 포함되어 비밀번호를 다시 생성했습니다. 다시 제출해 주세요."
+            )
+        except (Credit4uConfigError, ValueError):
+            entry["insurance_message"] = "비밀번호를 다시 생성할 수 없습니다."
+            return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    if not user_id or not password:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = "신용정보원 조회 계정이 준비되지 않았습니다."
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    try:
+        first_payload = _ensure_register_first_payload(entry, fid)
+    except CodefClientError as exc:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = exc.message
+        entry["insurance_error_code"] = exc.code or "CLIENT_ERROR"
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    two_way_info = entry.get("credit4u_register_two_way_info")
+    if not isinstance(two_way_info, dict) or not two_way_info:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = "회원가입 인증 정보가 없습니다. 회원가입을 처음부터 다시 시도해 주세요."
+        entry["insurance_error_code"] = "MISSING_REGISTER_TWO_WAY_INFO"
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    entry["credit4u_register_email"] = email_input
+    entry["credit4u_signup_email"] = email_input
+    entry["credit4u_credentials"] = {
+        **credentials,
+        "id": user_id,
+        "password": password,
+        "generated": True,
+        "source": str(credentials.get("source") or "generated"),
+    }
+    _set_insurance_submitting(
+        entry,
+        "register_signup_info_submitting",
+        _register_stage_user_message("register_signup_info_submitting"),
     )
+    entry.pop("insurance_error_code", None)
+    try:
+        api_result = _post_register_signup_info_sync(entry, fid)
+    except (CodefClientError, ValueError) as exc:
+        entry["insurance_status"] = "in_progress"
+        entry["insurance_stage"] = "register_signup_info_required"
+        entry["insurance_message"] = (
+            str(exc) if isinstance(exc, ValueError) else getattr(exc, "message", str(exc))
+        )
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+    _apply_credit4u_register_followup_response(entry, api_result, flow_id=fid)
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
 
@@ -2238,17 +3411,75 @@ def hospital_insurance_request_register_email_auth(
     flow_id: str | None = None,
     emailAuthNo: str = Form(""),
 ):
-    """이메일 인증번호 제출 스텁."""
+    """이메일 인증번호 제출 → register 추가요청."""
     fid = _canonical_flow_id(flow_id)
     if not fid:
         return RedirectResponse("/hospital/customer", status_code=303)
     entry = FLOW_STORE[fid]
     if entry.get("insurance_stage") != "register_email_auth_required":
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
-    entry["credit4u_register_email_auth_no_input"] = bool(str(emailAuthNo or "").strip())
-    entry["insurance_message"] = (
-        "이메일 인증번호가 입력되었습니다. 다음 작업에서 인증 요청을 연결합니다."
+    email_auth_input = str(emailAuthNo or "").strip()
+    if not email_auth_input:
+        entry["insurance_message"] = "이메일 인증번호를 입력해 주세요."
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    try:
+        first_payload = _ensure_register_first_payload(entry, fid)
+    except CodefClientError as exc:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = exc.message
+        entry["insurance_error_code"] = exc.code or "CLIENT_ERROR"
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    two_way_info = entry.get("credit4u_register_two_way_info")
+    if not isinstance(two_way_info, dict) or not two_way_info:
+        entry["insurance_status"] = "failed"
+        entry["insurance_stage"] = "failed"
+        entry["insurance_message"] = "회원가입 인증 정보가 없습니다. 회원가입을 처음부터 다시 시도해 주세요."
+        entry["insurance_error_code"] = "MISSING_REGISTER_TWO_WAY_INFO"
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    entry["credit4u_register_email_auth_no_input"] = True
+    _set_insurance_submitting(
+        entry,
+        "register_email_auth_submitting",
+        _register_stage_user_message("register_email_auth_submitting"),
     )
+    entry.pop("insurance_error_code", None)
+    entry["credit4u_register_payload_purpose"] = "email_auth"
+    api_result = post_credit4u_register_second(
+        first_payload,
+        two_way_info,
+        {"emailAuthNo": email_auth_input},
+        purpose="email_auth",
+    )
+    _apply_credit4u_register_followup_response(entry, api_result, flow_id=fid)
+    return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+
+@app.post("/hospital/insurance-request/register-retry-current")
+def hospital_insurance_request_register_retry_current(flow_id: str | None = None):
+    """CF-01004 등 타임아웃 후 현재 회원가입 단계로 복귀."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid:
+        return RedirectResponse("/hospital/customer", status_code=303)
+    entry = FLOW_STORE[fid]
+    if entry.get("credit4u_current_flow") != "register":
+        return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
+
+    stage = _resolve_register_retry_stage(entry)
+    entry["insurance_status"] = "in_progress"
+    entry["credit4u_current_flow"] = "register"
+    entry["insurance_stage"] = stage
+    entry["credit4u_current_request_status"] = stage
+    entry["insurance_message"] = register_followup_stage_message(stage)
+    if stage == "register_signup_info_required":
+        entry["insurance_message"] = (
+            "회원가입에 사용할 아이디, 비밀번호, 이메일 정보가 필요합니다. "
+            "다시 제출할 수 있습니다."
+        )
+    entry.pop("insurance_error_code", None)
     return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
 
 
