@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#fee500" />
+  <title>래드리본 · 지난 보험금 찾기</title>
+  <link rel="stylesheet" href="/static/customer_chat.css" />
+</head>
+<body class="customer-chat-page">
+  <div class="customer-chat-shell">
+    <header class="customer-chat-header">
+      <a class="customer-chat-header__back" href="{{ back_url }}" aria-label="서비스 선택으로">‹</a>
+      <div class="customer-chat-header__info">
+        <h1 class="customer-chat-header__title">래드리본</h1>
+        <p class="customer-chat-header__sub">지난 보험금 찾기 · 데모</p>
+      </div>
+    </header>
+
+    <main class="customer-chat-log" id="customer-chat-log" aria-live="polite" aria-label="접수 대화"></main>
+
+    <section id="customer-find-progress" class="customer-find-progress" hidden aria-live="polite">
+      <div class="customer-find-progress__card">
+        <h2 class="customer-find-progress__title">지난 보험금 찾기 진행 중</h2>
+        <p class="customer-find-progress__message" id="customer-find-progress-message">고객정보 저장 중</p>
+        <ul class="customer-find-progress__steps" id="customer-find-progress-steps"></ul>
+        <button type="button" class="customer-find-progress__auth-btn" id="customer-find-auth-confirm" hidden>
+          카카오 인증 완료
+        </button>
+      </div>
+    </section>
+
+    <section id="customer-find-results" class="customer-find-results" hidden>
+      <div class="customer-find-results__card">
+        <h2 class="customer-find-results__title">조회가 완료되었습니다</h2>
+        <ul class="customer-find-results__status">
+          <li id="customer-result-medical-status">진료내역 조회 완료</li>
+          <li id="customer-result-insurance-status">보험가입이력 조회 완료</li>
+          <li id="customer-result-ai-status">AI 분석 준비 완료</li>
+        </ul>
+        <div class="customer-find-results__actions">
+          <button type="button" class="customer-find-results__btn" data-view="medical">진료내역 보기</button>
+          <button type="button" class="customer-find-results__btn" data-view="insurance">보험가입이력 보기</button>
+          <button type="button" class="customer-find-results__btn customer-find-results__btn--primary" data-view="ai">AI 분석 보기</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="customer-view-sheet" class="customer-view-sheet" hidden role="dialog" aria-modal="true">
+      <button type="button" class="customer-view-sheet__backdrop" id="customer-view-sheet-backdrop" aria-label="닫기"></button>
+      <div class="customer-view-sheet__panel">
+        <header class="customer-view-sheet__header">
+          <h2 class="customer-view-sheet__title" id="customer-view-sheet-title">보기</h2>
+          <button type="button" class="customer-view-sheet__close" id="customer-view-sheet-close" aria-label="닫기">×</button>
+        </header>
+        <div class="customer-view-sheet__body" id="customer-view-sheet-body"></div>
+      </div>
+    </div>
+
+    <footer class="customer-chat-footer">
+      <div id="customer-consent-panel" class="customer-consent-panel" hidden>
+        <button
+          type="button"
+          class="customer-consent-panel__toggle"
+          id="customer-consent-toggle"
+          aria-expanded="false"
+          aria-controls="customer-consent-body"
+        >
+          동의서 전문 보기
+        </button>
+        <div id="customer-consent-body" class="customer-consent-panel__body">
+          <h2 class="customer-consent-panel__title">지난 보험금 찾기 동의서 (데모)</h2>
+          <p class="customer-consent-panel__lead">
+            래드리본 「지난 보험금 찾기」 서비스 이용을 위한 동의서입니다. 본 단계에서는 CODEF·보험사 API를 호출하지 않습니다.
+          </p>
+          <section class="customer-consent-section">
+            <h3>개인정보 수집·이용 동의</h3>
+            <p>성명, 휴대폰번호, 통신사, 이메일, 계좌정보를 본인확인·안내·보험금 수령 준비 목적으로 수집·이용합니다.</p>
+          </section>
+          <section class="customer-consent-section">
+            <h3>민감정보 처리 동의</h3>
+            <p>진료·보험 관련 민감정보를 지난 보험금 찾기·청구 검토 목적으로 처리할 수 있습니다.</p>
+          </section>
+          <section class="customer-consent-section">
+            <h3>고유식별정보 처리 동의</h3>
+            <p>주민등록번호는 본인확인 및 진료·보험가입이력 조회 연계를 위해 처리하며, 화면에는 마스킹하여 표시합니다.</p>
+          </section>
+          <section class="customer-consent-section">
+            <h3>진료내역 조회 안내</h3>
+            <p>건강보험·의료기관 연계 등을 통해 진료내역을 조회하여 청구 가능 여부를 검토할 수 있습니다.</p>
+          </section>
+          <section class="customer-consent-section">
+            <h3>보험가입이력 조회 안내</h3>
+            <p>신용정보원 등 연계를 통해 보험가입이력을 조회할 수 있습니다. (다음 단계 API 연결 예정)</p>
+          </section>
+          <section class="customer-consent-section">
+            <h3>병원 수신문서 및 보험금 청구 패키지 연계 안내</h3>
+            <p>병원에서 수신한 출력물·PDF를 OCR·매칭하고, 보험금 청구 패키지(서류 묶음)로 연계할 수 있습니다.</p>
+          </section>
+          <section class="customer-consent-section customer-consent-section--demo">
+            <h3>보험사 전송 안내</h3>
+            <p>실제 보험사 API 전송은 고객·담당자 확인 후 별도 단계에서 진행됩니다. 본 채팅 단계에서는 전송하지 않습니다.</p>
+          </section>
+        </div>
+      </div>
+
+      <div id="customer-consent-modal" class="customer-consent-modal" hidden role="dialog" aria-modal="true" aria-labelledby="customer-consent-modal-title">
+        <button type="button" class="customer-consent-modal__backdrop" id="customer-consent-modal-backdrop" aria-label="동의서 닫기"></button>
+        <div class="customer-consent-modal__sheet">
+          <header class="customer-consent-modal__header">
+            <h2 id="customer-consent-modal-title" class="customer-consent-modal__title">동의서 전문</h2>
+            <button type="button" class="customer-consent-modal__close" id="customer-consent-modal-close" aria-label="닫기">×</button>
+          </header>
+          <div class="customer-consent-modal__body" id="customer-consent-modal-body"></div>
+        </div>
+      </div>
+
+      <div id="customer-consent-dock" class="customer-consent-dock" hidden>
+        <button type="button" class="customer-consent-dock__view" id="customer-consent-dock-view">
+          동의서 전문 보기
+        </button>
+        <div class="customer-consent-dock__agree">
+          <button type="button" class="customer-chat-quick__btn customer-chat-quick__btn--primary" data-consent="agree">
+            동의합니다
+          </button>
+          <button type="button" class="customer-chat-quick__btn customer-chat-quick__btn--danger" data-consent="decline">
+            동의하지 않습니다
+          </button>
+        </div>
+      </div>
+
+      <div id="customer-summary-cta" class="customer-summary-cta" hidden>
+        <button type="button" class="customer-summary-cta__main" id="customer-summary-cta-start">
+          지난 보험금 찾기 시작
+        </button>
+        <button type="button" class="customer-summary-cta__secondary" id="customer-summary-cta-reset">
+          다시 입력
+        </button>
+      </div>
+
+      <div class="customer-chat-quick" id="customer-chat-quick" hidden></div>
+      <form class="customer-chat-form" id="customer-chat-form" autocomplete="off">
+        <div class="customer-chat-input-wrap">
+          <label class="customer-chat-input-label" id="customer-chat-input-label" for="customer-chat-input" hidden></label>
+          <input
+            class="customer-chat-input"
+            id="customer-chat-input"
+            type="text"
+            placeholder="답변 입력"
+            aria-label="답변 입력"
+          />
+        </div>
+        <button type="submit" class="customer-chat-send" id="customer-chat-send">전송</button>
+      </form>
+      <p class="customer-chat-complete-note">새로고침 전까지 대화가 유지됩니다. (데모·민감정보 마스킹 표시)</p>
+    </footer>
+  </div>
+
+  <script src="/static/customer_chat_steps.js"></script>
+  <script src="/static/customer_chat.js"></script>
+  <script src="/static/customer_chat_find_ui.js"></script>
+</body>
+</html>

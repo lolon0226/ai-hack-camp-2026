@@ -84,6 +84,7 @@ from services.integrated_analysis import (
     build_ai_analysis_context,
     execute_ai_claim_analysis,
     build_analysis_ready_context,
+    sanitize_ai_analysis_result,
 )
 from services.insurance_summary import (
     build_insurance_company_groups,
@@ -2466,6 +2467,11 @@ def _should_show_insurance_contract_retry(entry: dict[str, Any]) -> bool:
         return False
     if str(entry.get("insurance_stage") or "") == "existing_account_required":
         return False
+    result_code = str(
+        entry.get("credit4u_result_code") or entry.get("insurance_error_code") or ""
+    ).strip()
+    if result_code == "CF-00012":
+        return True
     status = entry.get("insurance_status")
     if status in ("completed", "failed"):
         return True
@@ -2933,7 +2939,7 @@ def intro(request: Request):
         request,
         "intro.html",
         {
-            "customer_url": "/customer/start",
+            "customer_url": "/customer/chat",
             "hospital_url": "/hospital/start",
             "operator_url": "/operator",
             **_printer_download_template_context(),
@@ -2941,18 +2947,521 @@ def intro(request: Request):
     )
 
 
+# 고객 채팅형 접수 임시 저장(데모·외부 API 미호출)
+CUSTOMER_CHAT_DRAFT_STORE: dict[str, dict[str, Any]] = {}
+
+
+@app.get("/customer", response_class=HTMLResponse)
+def customer_entry_redirect():
+    """고객용 서비스 진입 → 채팅형 접수 화면."""
+    return RedirectResponse("/customer/chat", status_code=303)
+
+
 @app.get("/customer/start", response_class=HTMLResponse)
-def customer_start_stub(request: Request):
-    """고객용 진입 스텁(준비 중)."""
+def customer_start_redirect():
+    """레거시 경로 → /customer/chat."""
+    return RedirectResponse("/customer/chat", status_code=303)
+
+
+@app.get("/customer/chat", response_class=HTMLResponse)
+def customer_chat(request: Request):
+    """고객용 채팅형 접수 UI (동의 → 정보입력 → 요약, 데모)."""
     return templates.TemplateResponse(
         request,
-        "flow_stub.html",
+        "customer_chat.html",
         {
-            "title": "고객용 서비스",
-            "lead": "고객용 서비스는 준비 중입니다. 통합 앱에서는 고객 흐름 화면으로 연결됩니다.",
             "back_url": "/",
         },
     )
+
+
+@app.post("/api/customer/chat/draft")
+async def customer_chat_draft_save(request: Request):
+    """고객 접수 입력 임시 저장(마스킹된 요약만, CODEF·보험사 API 미호출)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    draft_id = str(payload.get("draft_id") or "").strip() or uuid.uuid4().hex
+    answers = payload.get("answers") if isinstance(payload.get("answers"), dict) else {}
+    CUSTOMER_CHAT_DRAFT_STORE[draft_id] = {
+        "consent": bool(payload.get("consent")),
+        "answers": answers,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return JSONResponse({"ok": True, "draft_id": draft_id})
+
+
+def _customer_intake_identity_digits(intake: dict[str, Any]) -> str:
+    identity = re.sub(r"\D", "", str(intake.get("identity") or intake.get("rrn") or ""))[:13]
+    if len(identity) >= 13:
+        return identity[:13]
+    front = re.sub(r"\D", "", str(intake.get("rrnFront") or ""))[:6]
+    back = re.sub(r"\D", "", str(intake.get("rrnBack") or ""))[:7]
+    return (front + back)[:13]
+
+
+def _customer_intake_to_flow_customer(intake: dict[str, Any]) -> dict[str, Any]:
+    identity = _customer_intake_identity_digits(intake)
+    phone = re.sub(r"\D", "", str(intake.get("phone") or ""))[:11]
+    return {
+        "name": str(intake.get("name") or "").strip(),
+        "identity": identity,
+        "phone": phone,
+        "telecom": str(intake.get("telecom") or "").strip(),
+        "email": str(intake.get("email") or "").strip().lower(),
+        "auth_method": "kakao",
+    }
+
+
+def _create_customer_find_flow(intake: dict[str, Any]) -> str:
+    new_id = str(uuid.uuid4())
+    while new_id in FLOW_STORE:
+        new_id = str(uuid.uuid4())
+    customer = _customer_intake_to_flow_customer(intake)
+    FLOW_STORE[new_id] = {
+        "customer": customer,
+        "customer_intake": {
+            "bankName": str(intake.get("bankName") or "").strip(),
+            "accountNumber": re.sub(
+                r"\D", "", str(intake.get("accountNumber") or "")
+            ),
+            "accountHolderIsInsured": bool(intake.get("accountHolderIsInsured")),
+            "accountHolderCorrectionNoticeRequired": bool(
+                intake.get("accountHolderCorrectionNoticeRequired")
+            ),
+        },
+        "created_in_final": True,
+        "customer_find": True,
+        "medical_status": "pending",
+        "insurance_status": "pending",
+        "second_status": "idle",
+        "credit4u_second_status": "idle",
+    }
+    _register_customer_persistence(new_id, FLOW_STORE[new_id])
+    _provision_credit4u_credentials(FLOW_STORE[new_id])
+    return new_id
+
+
+def _customer_find_status_message(entry: dict[str, Any]) -> tuple[str, str]:
+    """고객용 진행 상태 키·표시 문구."""
+    if entry.get("customer_find_error"):
+        return "failed", str(entry.get("customer_find_error") or "처리 중 오류가 발생했습니다.")
+    ms = str(entry.get("medical_status") or "pending")
+    ins = str(entry.get("insurance_status") or "pending")
+    if entry.get("customer_find_phase") == "complete" or (
+        ms == "completed"
+        and ins == "completed"
+        and isinstance(entry.get("ai_analysis_result"), dict)
+    ):
+        return "complete", "결과 정리 중"
+    if ms == "pending":
+        return "medical_prepare", "진료내역 조회 준비 중"
+    if ms in ("waiting_auth", "waiting_auth_debug_needed"):
+        return "auth_waiting", "인증 확인 중"
+    if ms == "failed":
+        return "failed", str(entry.get("medical_message") or "진료내역 조회에 실패했습니다.")
+    if ms != "completed":
+        if entry.get("second_status") == "in_progress":
+            return "medical_fetching", "진료내역 가져오는 중"
+        return "auth_request", "본인인증 요청 중"
+    if ins == "pending":
+        return "insurance_prepare", "보험가입이력 조회 준비 중"
+    if ins == "in_progress":
+        return "insurance_fetching", "보험가입이력 가져오는 중"
+    if ins == "failed":
+        return "failed", str(
+            entry.get("insurance_message") or "보험가입이력 조회에 실패했습니다."
+        )
+    if ins != "completed":
+        return "insurance_fetching", "보험가입이력 가져오는 중"
+    if not isinstance(entry.get("ai_analysis_result"), dict):
+        return "ai_preparing", "결과 정리 중"
+    return "complete", "조회가 완료되었습니다."
+
+
+def _customer_find_status_payload(flow_id: str, entry: dict[str, Any]) -> dict[str, Any]:
+    phase_key, message = _customer_find_status_message(entry)
+    ms = entry.get("medical_status") or "pending"
+    ins = entry.get("insurance_status") or "pending"
+    counts = entry.get("medical_result_counts") or {}
+    ai_ready = isinstance(entry.get("ai_analysis_result"), dict) and bool(
+        (entry.get("ai_analysis_result") or {}).get("categories")
+    )
+    done = (
+        ms == "completed"
+        and ins == "completed"
+        and ai_ready
+        and phase_key != "failed"
+    )
+    if done:
+        phase_key = "complete"
+        message = "조회가 완료되었습니다."
+    return {
+        "flow_id": flow_id,
+        "phase": phase_key,
+        "message": message,
+        "medical_status": ms,
+        "insurance_status": ins,
+        "medical_completed": ms == "completed",
+        "insurance_completed": ins == "completed",
+        "ai_ready": ai_ready,
+        "done": done,
+        "needs_auth_confirm": ms in ("waiting_auth", "waiting_auth_debug_needed")
+        and not DEMO_MODE,
+        "failed": phase_key == "failed",
+        "medical_counts": {
+            "basic": int(counts.get("basic") or 0),
+            "detail": int(counts.get("detail") or 0),
+            "prescribe": int(counts.get("prescribe") or 0),
+        },
+    }
+
+
+def _customer_find_advance(
+    flow_id: str,
+    entry: dict[str, Any],
+    *,
+    confirm_auth: bool = False,
+) -> None:
+    """병원용 진료·보험 조회 로직을 고객용 JSON 흐름에서 한 단계 진행."""
+    entry["customer_find"] = True
+    ms = entry.get("medical_status") or "pending"
+
+    if ms == "pending":
+        if DEMO_MODE:
+            _request_hira_auth_demo(flow_id)
+            _apply_hira_waiting_auth(
+                entry,
+                result={"code": "DEMO", "message": "데모 모드"},
+                extracted={
+                    "continue2Way": True,
+                    "method": "simpleAuth",
+                    "twoWayInfo": {
+                        "jobIndex": 0,
+                        "threadIndex": 0,
+                        "jti": "demo",
+                        "twoWayTimestamp": 0,
+                    },
+                    "twoWayInfo_found": True,
+                    "root_keys": [],
+                    "data_keys": [],
+                },
+            )
+        else:
+            try:
+                _request_hira_auth_codef(flow_id, entry)
+            except CodefClientError as exc:
+                _apply_hira_auth_failed(
+                    entry,
+                    result_code=exc.code or "CLIENT_ERROR",
+                    result_message=exc.message,
+                    user_message=exc.message,
+                )
+        return
+
+    if ms in ("waiting_auth", "waiting_auth_debug_needed"):
+        if not confirm_auth and not DEMO_MODE:
+            return
+        if DEMO_MODE:
+            if entry.get("medical_status") != "waiting_auth":
+                entry["medical_status"] = "failed"
+                entry["medical_message"] = "인증 및 조회 순서가 올바르지 않습니다."
+            else:
+                _complete_hira_demo(entry)
+                _persist_medical_records_to_sqlite(flow_id, entry)
+        else:
+            second_status = entry.get("second_status") or "idle"
+            if entry.get("medical_status") == "completed" or second_status == "completed":
+                return
+            if second_status == "in_progress":
+                return
+            two_way_info = entry.get("two_way_info")
+            if not two_way_info:
+                entry["medical_message"] = (
+                    "인증 정보가 없습니다. 잠시 후 다시 시도해 주세요."
+                )
+                return
+            first_payload = _get_hira_first_payload(flow_id, entry)
+            entry["second_status"] = "in_progress"
+            try:
+                api_result = post_hira_medical_second(first_payload, two_way_info)
+                result_code = str(api_result.get("result_code") or "")
+                result_message = str(api_result.get("result_message") or "")
+                parsed = api_result.get("parsed")
+                if parsed is None or not api_result.get("ok"):
+                    _apply_hira_second_failed(
+                        entry,
+                        result_code=result_code or "ERROR",
+                        result_message=result_message,
+                        user_message=result_message
+                        or "진료내역 조회에 실패했습니다.",
+                    )
+                    return
+                lists = extract_hira_medical_lists(parsed)
+                _apply_hira_second_completed(
+                    entry,
+                    lists=lists,
+                    result_code=result_code,
+                    result_message=result_message,
+                )
+                _persist_medical_records_to_sqlite(flow_id, entry)
+            except CodefClientError as exc:
+                _apply_hira_second_failed(
+                    entry,
+                    result_code=exc.code or "CLIENT_ERROR",
+                    result_message=exc.message,
+                    user_message=exc.message,
+                )
+            except Exception:
+                logger.exception("customer find hira second failed flow_id=%s", flow_id)
+                _apply_hira_second_failed(
+                    entry,
+                    result_code="ERROR",
+                    result_message="unexpected",
+                    user_message="진료내역 조회 중 오류가 발생했습니다.",
+                )
+        return
+
+    if ms != "completed":
+        return
+
+    ins = entry.get("insurance_status") or "pending"
+    customer = entry.get("customer") or {}
+    if ins == "pending":
+        if _customer_has_stored_insurance_records(customer):
+            _restore_saved_insurance_records_if_needed(entry)
+            return
+        if _demo_complete_allowed():
+            entry["insurance_status"] = "in_progress"
+            _apply_insurance_sample_complete(entry)
+            return
+        try:
+            _request_insurance_history_start(flow_id, entry)
+        except (Credit4uConfigError, ValueError) as exc:
+            entry["insurance_status"] = "failed"
+            entry["insurance_message"] = str(exc) or "보험가입이력 조회를 시작할 수 없습니다."
+        return
+
+    if ins == "in_progress":
+        if _demo_complete_allowed():
+            _apply_insurance_sample_complete(entry)
+            return
+        stage = str(entry.get("insurance_stage") or "")
+        if stage == "register_completed" and entry.get("credit4u_register_completed"):
+            _on_register_completed(flow_id, entry)
+        return
+
+    if ins == "completed" and not isinstance(entry.get("ai_analysis_result"), dict):
+        try:
+            execute_ai_claim_analysis(
+                entry,
+                restore_medical_fn=_apply_saved_medical_records,
+                restore_insurance_fn=_restore_saved_insurance_records_if_needed,
+                use_openai=True,
+            )
+        except Exception:
+            logger.exception("customer find ai analysis failed flow_id=%s", flow_id)
+            entry["customer_find_error"] = "AI 분석 준비 중 오류가 발생했습니다."
+        entry["customer_find_phase"] = "complete"
+        return
+
+
+def _customer_find_medical_rows_customer(
+    flow_id: str, entry: dict[str, Any]
+) -> list[dict[str, str]]:
+    _ensure_medical_records_loaded(flow_id, entry)
+    rows: list[dict[str, str]] = []
+    for row in _medical_records_basic_all(entry)[:20]:
+        if not isinstance(row, dict):
+            continue
+        rows.append(
+            {
+                "visit_date": str(row.get("visit_date") or "—"),
+                "hospital_name": str(row.get("hospital_name") or "—"),
+                "department": str(row.get("department") or "—"),
+                "diagnosis": str(
+                    row.get("main_diagnosis") or row.get("diagnosis") or "—"
+                ),
+                "copay_amount": str(row.get("copay_amount") or "—"),
+            }
+        )
+    return rows
+
+
+def _customer_find_insurance_summary_customer(entry: dict[str, Any]) -> dict[str, Any]:
+    _restore_saved_insurance_records_if_needed(entry)
+    groups = entry.get("insurance_company_groups") or []
+    if not isinstance(groups, list):
+        groups = []
+    companies: list[dict[str, Any]] = []
+    product_count = 0
+    for g in groups[:12]:
+        if not isinstance(g, dict):
+            continue
+        products = g.get("products") or []
+        if isinstance(products, list):
+            product_count += len(products)
+        companies.append(
+            {
+                "company_name": str(g.get("company_name") or "—"),
+                "product_count": len(products) if isinstance(products, list) else 0,
+            }
+        )
+    summary = entry.get("insurance_summary") if isinstance(entry.get("insurance_summary"), dict) else {}
+    return {
+        "product_count": int(summary.get("product_count") or product_count),
+        "companies": companies,
+    }
+
+
+def _customer_find_ai_summary_customer(entry: dict[str, Any]) -> dict[str, Any]:
+    ai = entry.get("ai_analysis_result")
+    if not isinstance(ai, dict):
+        return {}
+    ai = sanitize_ai_analysis_result(ai)
+    totals = ai.get("totals") if isinstance(ai.get("totals"), dict) else {}
+    categories = ai.get("categories") if isinstance(ai.get("categories"), dict) else {}
+    priority: list[dict[str, str]] = []
+    for key in ("high_potential", "need_review", "need_documents", "low_potential"):
+        for item in (categories.get(key) or [])[:5]:
+            if not isinstance(item, dict):
+                continue
+            priority.append(
+                {
+                    "visit_date": str(item.get("visit_date") or "—"),
+                    "hospital_name": str(item.get("hospital_name") or "—"),
+                    "label": str(item.get("reason_short") or item.get("category_label") or "검토 항목"),
+                    "amount_display": str(
+                        item.get("estimated_amount_display")
+                        or item.get("estimated_display")
+                        or "—"
+                    ),
+                }
+            )
+            if len(priority) >= 5:
+                break
+        if len(priority) >= 5:
+            break
+    docs: list[str] = []
+    for item in priority[:3]:
+        label = item.get("label") or ""
+        if label and label not in docs:
+            docs.append(label)
+    if not docs:
+        docs = ["진료비 영수증", "진단서(필요 시)", "보험금 청구서"]
+    detail = ai.get("summary_text") or ai.get("analysis_summary") or ""
+    return {
+        "candidate_count": int(totals.get("total_candidate_count") or 0),
+        "estimated_display": str(
+            totals.get("total_estimated_display")
+            or totals.get("total_candidate_base_display")
+            or "—"
+        ),
+        "priority_visits": priority[:5],
+        "documents_needed": docs[:6],
+        "detail_collapsed": str(detail)[:2000] if detail else "",
+        "disclaimer": (
+            "본 화면은 청구 가능성이 있는 항목·검토가 필요한 항목을 안내하며, "
+            "보험금 지급을 확정하는 결과는 아닙니다."
+        ),
+    }
+
+
+def _customer_find_results_payload(flow_id: str, entry: dict[str, Any]) -> dict[str, Any]:
+    status = _customer_find_status_payload(flow_id, entry)
+    return {
+        "ok": True,
+        "status": status,
+        "medical": {
+            "completed": status["medical_completed"],
+            "counts": status["medical_counts"],
+            "visits": _customer_find_medical_rows_customer(flow_id, entry),
+        },
+        "insurance": {
+            "completed": status["insurance_completed"],
+            **_customer_find_insurance_summary_customer(entry),
+        },
+        "ai": _customer_find_ai_summary_customer(entry),
+    }
+
+
+@app.post("/api/customer/find/start")
+async def api_customer_find_start(request: Request):
+    """고객 채팅 입력으로 flow 생성(병원 FLOW_STORE 재사용)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    intake = body.get("payload") if isinstance(body.get("payload"), dict) else body
+    if not intake.get("consent"):
+        return JSONResponse(
+            {"ok": False, "error": "consent_required"},
+            status_code=400,
+        )
+    identity = _customer_intake_identity_digits(intake)
+    if len(identity) != 13:
+        return JSONResponse(
+            {"ok": False, "error": "invalid_identity"},
+            status_code=400,
+        )
+    flow_id = _create_customer_find_flow(intake)
+    entry = FLOW_STORE[flow_id]
+    entry["customer_find_phase"] = "saving"
+    status = _customer_find_status_payload(flow_id, entry)
+    return JSONResponse({"ok": True, "flow_id": flow_id, "status": status})
+
+
+@app.post("/api/customer/find/advance")
+async def api_customer_find_advance(request: Request):
+    """고객용 조회 한 단계 진행(진료·보험·AI)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    flow_id = _canonical_flow_id(str(body.get("flow_id") or ""))
+    if not flow_id or flow_id not in FLOW_STORE:
+        return JSONResponse({"ok": False, "error": "flow_not_found"}, status_code=404)
+    entry = FLOW_STORE[flow_id]
+    confirm_auth = bool(body.get("confirm_auth"))
+    _customer_find_advance(flow_id, entry, confirm_auth=confirm_auth)
+    status = _customer_find_status_payload(flow_id, entry)
+    return JSONResponse({"ok": True, "status": status})
+
+
+@app.get("/api/customer/find/status")
+def api_customer_find_status(flow_id: str | None = None):
+    fid = _canonical_flow_id(flow_id)
+    if not fid or fid not in FLOW_STORE:
+        return JSONResponse({"ok": False, "error": "flow_not_found"}, status_code=404)
+    entry = FLOW_STORE[fid]
+    return JSONResponse(
+        {"ok": True, "status": _customer_find_status_payload(fid, entry)}
+    )
+
+
+@app.get("/api/customer/find/results")
+def api_customer_find_results(flow_id: str | None = None):
+    fid = _canonical_flow_id(flow_id)
+    if not fid or fid not in FLOW_STORE:
+        return JSONResponse({"ok": False, "error": "flow_not_found"}, status_code=404)
+    entry = FLOW_STORE[fid]
+    if not _prepare_integrated_flow_entry(fid, entry):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "not_ready",
+                "status": _customer_find_status_payload(fid, entry),
+            },
+            status_code=409,
+        )
+    return JSONResponse(_customer_find_results_payload(fid, entry))
 
 
 @app.get("/hospital/start", response_class=HTMLResponse)

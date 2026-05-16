@@ -163,8 +163,17 @@ def enrich_operator_received_document_for_display(
     total_disp = _format_amount_display(amounts.get("total_amount"))
     self_disp = _format_amount_display(amounts.get("self_pay_amount"))
     paid_disp = _format_amount_display(amounts.get("paid_amount"))
-    if amounts.get("confirmation_required"):
-        amount_parts.append(str(amounts.get("display_message") or "금액 후보 확인 필요"))
+    amount_label = str(amounts.get("display_message") or "").strip()
+    if amounts.get("candidate_mode") or amounts.get("confirmation_required"):
+        if amount_label in ("금액 후보", "OCR 추출 금액"):
+            amount_parts.append(amount_label)
+        else:
+            amount_parts.append("금액 후보")
+        cand_values = amounts.get("candidates") if isinstance(amounts.get("candidates"), list) else []
+        if cand_values:
+            preview = ", ".join(_format_amount_display(v) for v in cand_values[:4] if v)
+            if preview:
+                amount_parts.append(preview)
     else:
         if total_disp:
             amount_parts.append(f"총액 {total_disp}")
@@ -173,10 +182,12 @@ def enrich_operator_received_document_for_display(
         if paid_disp:
             amount_parts.append(f"납부 {paid_disp}")
 
-    if matched_fields:
-        match_basis = "+".join(str(f) for f in matched_fields) + " 일치"
-    else:
-        match_basis = "—"
+    match_basis = str(match.get("match_basis_display") or "").strip()
+    if not match_basis:
+        if matched_fields:
+            match_basis = "+".join(str(f) for f in matched_fields) + " 일치"
+        else:
+            match_basis = "—"
 
     ocr_status_raw = str(doc.get("ocr_status") or "pending").strip().lower()
     has_core_ocr = bool(

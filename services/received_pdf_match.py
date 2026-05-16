@@ -84,6 +84,17 @@ _VISIT_YEAR_MIN = 2020
 _MAX_UNLABELED_VISIT_DATES = 5
 _AMOUNT_PRIORITY_LABELS = ("환자부담", "본인부담", "납부", "수납", "합계")
 _HOSPITAL_SUFFIX_ENDINGS = ("정형외과", "의원", "병원", "약국", "내과")
+_HOSPITAL_PREFIX_LABELS = (
+    "요양기관명",
+    "의료기관명",
+    "사업장명",
+    "사업자명",
+    "발행기관",
+    "기관명",
+    "상호",
+)
+_AMOUNT_SIMILAR_REL_TOL = 0.03
+_AMOUNT_SIMILAR_ABS_TOL = 1000
 
 _NAME_BLOCKLIST_EXACT = frozenset(
     {
@@ -168,7 +179,17 @@ def normalize_person_name(value: str) -> str:
 
 
 def normalize_hospital_name(value: str) -> str:
-    return re.sub(r"\s+", "", str(value or "")).strip()
+    """공백 제거 + 상호·요양기관명 등 라벨성 접두어 제거."""
+    collapsed = re.sub(r"\s+", "", str(value or "")).strip()
+    if not collapsed:
+        return ""
+    upper = collapsed.upper()
+    if upper in _PLACEHOLDER_HOSPITALS or "TEST" in upper:
+        return ""
+    for prefix in sorted(_HOSPITAL_PREFIX_LABELS, key=len, reverse=True):
+        if collapsed.startswith(prefix) and len(collapsed) > len(prefix) + 3:
+            collapsed = collapsed[len(prefix) :]
+    return collapsed.strip()
 
 
 def _visit_year_max() -> int:
@@ -970,7 +991,42 @@ def _extract_amounts_from_text(
     if amounts["confirmation_required"] and amounts["total_amount"] is None and all_values:
         amounts["total_amount"] = all_values[0]
 
+    candidate_mode, display_message = _amount_candidate_display_mode(amounts)
+    amounts["candidate_mode"] = candidate_mode
+    if candidate_mode:
+        amounts["display_message"] = display_message
+
     return amounts, raw_candidates, dict(amounts), selected_reason
+
+
+def _amount_values_close(left: int, right: int) -> bool:
+    if left <= 0 or right <= 0:
+        return False
+    diff = abs(left - right)
+    return diff <= max(_AMOUNT_SIMILAR_ABS_TOL, int(max(left, right) * _AMOUNT_SIMILAR_REL_TOL))
+
+
+def _amount_candidate_display_mode(amounts: dict[str, Any]) -> tuple[bool, str]:
+    """총액·본인부담·납부가 유사하거나 후보가 애매하면 후보 표시."""
+    candidates = [int(v) for v in (amounts.get("candidates") or []) if v]
+    picked = [
+        int(v)
+        for v in (
+            amounts.get("total_amount"),
+            amounts.get("self_pay_amount"),
+            amounts.get("paid_amount"),
+        )
+        if v
+    ]
+    if len(picked) >= 2 and all(
+        _amount_values_close(picked[0], value) for value in picked[1:]
+    ):
+        return True, "OCR 추출 금액"
+    if len(candidates) >= 2 and _amount_values_close(candidates[0], candidates[1]):
+        return True, "금액 후보"
+    if amounts.get("confirmation_required"):
+        return True, "금액 후보"
+    return False, ""
 
 
 def _is_blocked_name_candidate(name: str) -> bool:
@@ -1096,7 +1152,9 @@ def _extract_hospital_name(text: str, hospital_hint: str = "") -> tuple[str, lis
     hint = _sanitize_hospital_hint(hospital_hint)
     if hint:
         normalized = normalize_hospital_name(hint)
-        return normalized, [normalized]
+        if normalized:
+            return normalized, [normalized]
+        return "", []
     candidates = _extract_hospital_fuzzy_candidates(text)
     if not candidates:
         return "", []
@@ -1140,8 +1198,8 @@ def _infer_document_type(filename: str, text: str) -> tuple[str, bool]:
 def _amounts_populated(amounts: dict[str, Any]) -> bool:
     if not isinstance(amounts, dict):
         return False
-    if amounts.get("confirmation_required"):
-        return True
+    if amounts.get("candidate_mode") or amounts.get("confirmation_required"):
+        return bool(amounts.get("candidates") or amounts.get("total_amount"))
     return any(amounts.get(k) for k in ("total_amount", "self_pay_amount", "paid_amount"))
 
 
@@ -1280,8 +1338,11 @@ def build_ocr_metadata_block(ocr_raw: dict[str, Any]) -> dict[str, Any]:
         "candidates": list(amounts_in.get("candidates") or []),
         "confirmation_required": bool(amounts_in.get("confirmation_required")),
     }
-    if amounts_in.get("confirmation_required"):
-        amounts_block["display_message"] = "금액 후보 확인 필요"
+    if amounts_in.get("display_message"):
+        amounts_block["display_message"] = str(amounts_in.get("display_message"))
+    elif amounts_in.get("confirmation_required"):
+        amounts_block["display_message"] = "금액 후보"
+    amounts_block["candidate_mode"] = bool(amounts_in.get("candidate_mode"))
 
     block: dict[str, Any] = {
         "patient_name": str(ocr_raw.get("patient_name") or "").strip(),
@@ -1336,21 +1397,58 @@ def _enrich_match_targets_with_flow(
 def _score_rrn_field(
     ocr_rrn_digits: str,
     target: dict[str, Any],
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, bool]:
+    """(일치, 생년월일만/부분, 전체 13자리 일치)."""
     identity_hash = str(target.get("identity_hash") or "")
     identity_digits = str(target.get("identity_digits") or "")
     if len(ocr_rrn_digits) >= 13 and identity_hash:
         try:
             if _identity_hash(ocr_rrn_digits) == identity_hash:
-                return True, False
+                return True, False, True
         except PersistentStoreConfigError:
-            return False, False
+            return False, False, False
+    if len(ocr_rrn_digits) >= 13 and len(identity_digits) >= 13:
+        if ocr_rrn_digits == identity_digits:
+            return True, False, True
     if len(ocr_rrn_digits) >= 6 and len(identity_digits) >= 6:
         if ocr_rrn_digits[:6] == identity_digits[:6]:
-            return True, True
+            return True, True, False
         if len(ocr_rrn_digits) >= 7 and ocr_rrn_digits[:7] == identity_digits[:7]:
-            return True, True
-    return False, False
+            return True, True, False
+    return False, False, False
+
+
+def _resolve_ocr_match_status(
+    matched_fields: list[str],
+    *,
+    rrn_full: bool,
+) -> str:
+    has_name = "이름" in matched_fields
+    has_phone = "전화번호" in matched_fields
+    has_rrn_full = "주민번호" in matched_fields or rrn_full
+    has_rrn_partial = "주민번호(생년월일)" in matched_fields
+
+    if has_rrn_full:
+        return _MATCH_STATUS_AUTO
+    if has_name and has_phone:
+        return _MATCH_STATUS_AUTO
+    if has_name and has_rrn_full:
+        return _MATCH_STATUS_AUTO
+    if has_phone and has_rrn_full:
+        return _MATCH_STATUS_AUTO
+    if has_name or has_phone or has_rrn_partial:
+        return _MATCH_STATUS_REVIEW
+    return _MATCH_STATUS_UNMATCHED
+
+
+def _match_basis_display_for_fields(
+    matched_fields: list[str],
+    *,
+    rrn_full_only: bool,
+) -> str:
+    if rrn_full_only and matched_fields == ["주민번호"]:
+        return "주민번호 일치"
+    return format_match_basis(matched_fields)
 
 
 def match_customer_for_ocr(
@@ -1358,7 +1456,7 @@ def match_customer_for_ocr(
     *,
     flow_store: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """이름(퍼지)+주민번호 일치 시 auto_matched. 주민번호 단독 일치는 auto 금지."""
+    """주민 전체·이름+전화·이름+주민·전화+주민 → auto. 이름/전화 단독·생년월일만 → review."""
     targets = _enrich_match_targets_with_flow(list_customer_match_targets(), flow_store)
     ocr_name = normalize_person_name(str(ocr_raw.get("patient_name") or ""))
     ocr_text = str(ocr_raw.get("_text") or "")
@@ -1371,6 +1469,8 @@ def match_customer_for_ocr(
         "match_status": _MATCH_STATUS_UNMATCHED,
         "matched_customer_key": None,
         "matched_customer_name": "",
+        "rrn_full_match": False,
+        "match_basis_display": "—",
     }
 
     hash_available = is_search_hash_secret_configured()
@@ -1378,6 +1478,7 @@ def match_customer_for_ocr(
     for target in targets:
         matched_fields: list[str] = []
         score = 0
+        rrn_full = False
 
         target_name = str(target.get("name") or "")
         if _name_matches_target(target_name, ocr_name, ocr_text):
@@ -1392,28 +1493,20 @@ def match_customer_for_ocr(
             except PersistentStoreConfigError:
                 pass
 
-        rrn_matched, rrn_partial = _score_rrn_field(ocr_rrn, target)
-        if rrn_matched:
-            matched_fields.append(
-                "주민번호(생년월일)" if rrn_partial and len(ocr_rrn) < 13 else "주민번호"
-            )
+        rrn_matched, rrn_partial, rrn_full = _score_rrn_field(ocr_rrn, target)
+        if rrn_full:
+            if "주민번호" not in matched_fields:
+                matched_fields.append("주민번호")
             score += 1
-            if "이름" not in matched_fields and _name_matches_target(
-                target_name, ocr_name, ocr_text
-            ):
-                matched_fields.append("이름")
-                score += 1
+        elif rrn_matched and rrn_partial:
+            matched_fields.append("주민번호(생년월일)")
+            score += 1
 
-        has_name = "이름" in matched_fields
-        has_rrn = any(
-            f in matched_fields for f in ("주민번호", "주민번호(생년월일)")
+        status = _resolve_ocr_match_status(matched_fields, rrn_full=rrn_full)
+        rrn_full_only = rrn_full and matched_fields == ["주민번호"]
+        basis_display = _match_basis_display_for_fields(
+            matched_fields, rrn_full_only=rrn_full_only
         )
-        if has_name and has_rrn:
-            status = _MATCH_STATUS_AUTO
-        elif score >= 1:
-            status = _MATCH_STATUS_REVIEW
-        else:
-            status = _MATCH_STATUS_UNMATCHED
 
         if score > int(best.get("match_score") or 0) or (
             score == int(best.get("match_score") or 0)
@@ -1434,6 +1527,8 @@ def match_customer_for_ocr(
                     candidate_name if status == _MATCH_STATUS_AUTO else ""
                 ),
                 "review_candidate_name": "",
+                "rrn_full_match": rrn_full,
+                "match_basis_display": basis_display,
             }
 
     return best
@@ -1550,6 +1645,10 @@ def apply_received_pdf_ocr_and_match(
             linked_name = ""
             if match.get("match_status") == _MATCH_STATUS_AUTO:
                 linked_name = str(match.get("matched_customer_name") or "")
+                if match.get("rrn_full_match") and not str(
+                    ocr_block.get("patient_name") or ""
+                ).strip():
+                    ocr_block["patient_name"] = linked_name
 
         metadata["ocr"] = ocr_block
         metadata["match"] = {
@@ -1558,6 +1657,8 @@ def apply_received_pdf_ocr_and_match(
             "match_status": match.get("match_status"),
             "matched_customer_key": match.get("matched_customer_key"),
             "review_candidate_name": match.get("review_candidate_name"),
+            "match_basis_display": match.get("match_basis_display"),
+            "rrn_full_match": bool(match.get("rrn_full_match")),
         }
         if ocr_raw.get("document_type_inferred"):
             metadata["document_type_inferred"] = True

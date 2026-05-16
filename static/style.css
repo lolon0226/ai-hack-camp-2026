@@ -1883,6 +1883,22 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   text-align: center;
 }
 
+.hospital-insurance-retry-summary {
+  margin: 0 0 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--rr-border, #e2e6ec);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.hospital-insurance-retry--top .hospital-insurance-retry-top__actions {
+  margin-top: 0;
+}
+
+.hospital-insurance-retry--top .hospital-insurance-retry__hint {
+  margin-bottom: 0;
+}
+
 .hospital-insurance-state__next--top {
   margin: 0.5rem 0 0.25rem;
 }

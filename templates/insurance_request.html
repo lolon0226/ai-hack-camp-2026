@@ -82,6 +82,14 @@
     <p class="hospital-form-error hospital-form-error--info" role="status">{{ insurance_message }}</p>
     {% endif %}
 
+    {% if show_insurance_contract_retry %}
+    <section class="hospital-insurance-retry-summary" aria-label="보험가입이력 재조회">
+      {% with retry_hint="저장된 신용정보원 계정으로 보험가입이력을 다시 조회합니다.", retry_variant="top" %}
+      {% include "partials/insurance_contract_retry.html" %}
+      {% endwith %}
+    </section>
+    {% endif %}
+
     <section class="hospital-insurance-state" aria-live="polite">
       {% if insurance_status == "pending" and not hide_insurance_codf_start %}
       <p class="hospital-insurance-state__lead">보험가입이력 조회가 필요합니다.</p>
