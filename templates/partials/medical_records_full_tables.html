@@ -23,6 +23,8 @@
                 <th scope="col">진료과</th>
                 <th scope="col">상병명</th>
                 <th scope="col">본인부담금</th>
+                <th scope="col">총진료비</th>
+                <th scope="col">공단부담금</th>
               </tr>
             </thead>
             <tbody>
@@ -33,6 +35,8 @@
                 <td>{{ row.department }}</td>
                 <td>{{ row.main_diagnosis or row.diagnosis }}</td>
                 <td>{{ row.copay_amount }}</td>
+                <td>{{ row.total_amount or '—' }}</td>
+                <td>{{ row.public_insurance_amount or '—' }}</td>
               </tr>
               {% endfor %}
             </tbody>

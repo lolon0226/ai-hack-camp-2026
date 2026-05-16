@@ -29,7 +29,7 @@ UninstallDisplayIcon={app}\print_receiver\receiver_engine.py
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [Messages]
-korean.FinishedLabel=설치가 완료되었습니다.%n%n[PDFCreator — RedRibbon 전용 가상프린터]%n프린터 또는 프로필 **redribbon** 의 자동 저장 폴더:%n%n  C:\RedRibbonDemo\incoming%n%n병원 문서를 redribbon 으로 인쇄하면 PDF가 저장되고, RedRibbon Print Receiver Engine(병원 출력물 자동 수신 모듈)이 래드리본 서버로 전송합니다.%n%n로그온 시 수신 엔진이 자동 시작되며, 바탕화면 「RedRibbon Receiver 실행」으로 수동 시작할 수 있습니다.
+korean.FinishedLabel=설치가 완료되었습니다.%n%nPDFCreator 기반 RedRibbon 전용 가상프린터가 자동 구성되었습니다.%n병원 문서를 RedRibbon Printer로 인쇄하면 C:\RedRibbonDemo\incoming 폴더로 저장되고,%nReceiver Engine이 이를 서버로 전송합니다.%n%n[설치된 항목]%n· C:\RedRibbonDemo 및 Receiver Engine%n· RedRibbon Printer (PDFCreator 기준 자동 생성 시도)%n· 작업 스케줄러 RedRibbonDemoReceiver%n%nPDFCreator가 없으면 프린터 자동 생성은 건너뜁니다. 점검: 「수신 엔진 점검」
 
 [Dirs]
 Name: "{app}\print_receiver"

@@ -7,7 +7,7 @@
   "failed_dir": "C:\\RedRibbonDemo\\failed",
   "log_dir": "C:\\RedRibbonDemo\\logs",
   "hospital_name": "TEST_HOSPITAL",
-  "printer_name": "redribbon",
+  "printer_name": "RedRibbon Printer",
   "poll_interval_seconds": 2,
   "stable_wait_seconds": 2,
   "upload_timeout_seconds": 900

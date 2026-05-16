@@ -43,6 +43,11 @@
   var progressEl = document.getElementById("customer-find-progress");
   var progressMessageEl = document.getElementById("customer-find-progress-message");
   var progressSubtitleEl = document.getElementById("customer-find-progress-subtitle");
+  var progressStageTitleEl = document.getElementById("customer-find-progress-stage-title");
+  var progressHeadingEl = document.getElementById("customer-find-progress-heading");
+  var kakaoHighlightEl = document.getElementById("customer-find-kakao-highlight");
+  var kakaoHighlightTextEl = document.getElementById("customer-find-kakao-highlight-text");
+  var progressBadgesEl = document.getElementById("customer-find-progress-badges");
   var progressHintEl = document.getElementById("customer-find-progress-hint");
   var progressLoadingEl = document.getElementById("customer-find-progress-loading");
   var progressLoadingLineEl = document.getElementById(
@@ -1297,6 +1302,11 @@
     progressEl: progressEl,
     progressMessageEl: progressMessageEl,
     progressSubtitleEl: progressSubtitleEl,
+    progressStageTitleEl: progressStageTitleEl,
+    progressHeadingEl: progressHeadingEl,
+    kakaoHighlightEl: kakaoHighlightEl,
+    kakaoHighlightTextEl: kakaoHighlightTextEl,
+    progressBadgesEl: progressBadgesEl,
     progressHintEl: progressHintEl,
     progressLoadingEl: progressLoadingEl,
     progressLoadingLineEl: progressLoadingLineEl,

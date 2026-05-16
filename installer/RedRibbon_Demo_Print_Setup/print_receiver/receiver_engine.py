@@ -27,7 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "failed_dir": rf"{_DEMO_ROOT}\failed",
     "logs_dir": rf"{_DEMO_ROOT}\logs",
     "hospital_name": "TEST_HOSPITAL",
-    "printer_name": "redribbon",
+    "printer_name": "RedRibbon Printer",
     "poll_interval_sec": 2,
     "stable_wait_sec": 2,
     "stable_timeout_sec": 120,
@@ -182,7 +182,7 @@ def upload_pdf(config: dict[str, Any], path: Path, logger: logging.Logger) -> di
         files = {"file": (path.name, fh, "application/pdf")}
         data = {
             "hospital_name": str(config.get("hospital_name") or ""),
-            "printer_name": str(config.get("printer_name") or "redribbon"),
+            "printer_name": str(config.get("printer_name") or "RedRibbon Printer"),
         }
         response = requests.post(url, files=files, data=data, timeout=timeout)
     try:

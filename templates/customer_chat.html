@@ -27,12 +27,28 @@
 
     <section id="customer-find-progress" class="customer-find-progress" hidden aria-live="polite">
       <div class="customer-find-progress__card">
-        <h2 class="customer-find-progress__title">지난 보험금 찾기 진행 중</h2>
+        <h2 class="customer-find-progress__title" id="customer-find-progress-heading">지난 보험금 찾기 진행 중</h2>
+        <p class="customer-find-progress__stage-title" id="customer-find-progress-stage-title" hidden></p>
+        <div class="customer-find-kakao-highlight" id="customer-find-kakao-highlight" hidden>
+          <span class="customer-find-kakao-highlight__icon" aria-hidden="true">✓</span>
+          <p class="customer-find-kakao-highlight__text" id="customer-find-kakao-highlight-text">카카오 인증 요청이 발송되었습니다.</p>
+        </div>
+        <ul class="customer-find-progress__badges" id="customer-find-progress-badges" aria-label="진행 상태"></ul>
+        <p class="customer-find-progress__subtitle" id="customer-find-progress-subtitle" hidden></p>
         <p class="customer-find-progress__message" id="customer-find-progress-message">고객정보 저장 중</p>
+        <p class="customer-find-progress__hint" id="customer-find-progress-hint" hidden></p>
+        <div class="customer-find-progress__loading" id="customer-find-progress-loading" hidden>
+          <div class="customer-find-progress__spinner" aria-hidden="true"></div>
+          <div class="customer-find-progress__dots" aria-hidden="true"><i></i><i></i><i></i></div>
+          <p class="customer-find-progress__loading-line" id="customer-find-progress-loading-line"></p>
+          <p class="customer-find-progress__loading-sub" id="customer-find-progress-loading-sub"></p>
+        </div>
         <ul class="customer-find-progress__steps" id="customer-find-progress-steps"></ul>
-        <button type="button" class="customer-find-progress__auth-btn" id="customer-find-auth-confirm" hidden>
-          카카오 인증 완료
-        </button>
+        <div class="customer-find-progress__auth-wrap">
+          <button type="button" class="customer-find-progress__auth-btn customer-find-progress__auth-btn--kakao" id="customer-find-auth-confirm" hidden>
+            카카오 인증 완료
+          </button>
+        </div>
       </div>
     </section>
 

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>보험가입이력 보기 · 래드리본</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/customer_chat.css" />
+</head>
+<body class="customer-result-page hospital-existing-insurance-page">
+  <header class="customer-result-header">
+    <a class="customer-result-header__back" href="{{ back_url }}">조회 결과로</a>
+    <h1 class="customer-result-header__title">보험가입이력 보기</h1>
+  </header>
+
+  <main class="hospital-existing-insurance-main customer-result-main">
+    <section class="hospital-existing-insurance-hero">
+      <p class="hospital-existing-insurance-hero__lead">
+        {{ customer_name }} · 저장된 조회 자료 · CODEF 미호출
+      </p>
+    </section>
+
+    {% if company_groups %}
+    <div class="insurance-company-list">
+      {% for group in company_groups %}
+      <article class="insurance-company-card">
+        <header class="insurance-company-card__header">
+          <h2 class="insurance-company-card__name">{{ group.company_name }}</h2>
+          <p class="insurance-company-card__meta">
+            상품 <strong>{{ group.contract_count }}</strong>건
+            {% if group.active_contract_count is defined %}
+            · 정상/유지 <strong>{{ group.active_contract_count }}</strong>건
+            {% endif %}
+          </p>
+        </header>
+        <div class="insurance-product-list">
+          {% for product in group.products %}
+          {% include "partials/insurance_product_card.html" %}
+          {% endfor %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="toggle-panel__empty">표시할 보험가입이력이 없습니다.</p>
+    {% endif %}
+
+    {% if reference_products %}
+    <section class="customer-insurance-reference" aria-label="참고 정보">
+      <h2 class="customer-insurance-reference__title">참고 정보</h2>
+      <p class="customer-insurance-reference__lead">지급 사유 미상·추정 항목은 청구 검토 우선순위에서 제외됩니다.</p>
+      <div class="insurance-product-list">
+        {% for product in reference_products %}
+        {% set group = {'company_name': product.company_name or '—'} %}
+        {% include "partials/insurance_product_card.html" %}
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <nav class="customer-result-nav">
+      <a class="customer-find-results__btn customer-find-results__btn--primary" href="{{ back_url }}">조회 결과로 돌아가기</a>
+    </nav>
+  </main>
+</body>
+</html>

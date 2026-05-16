@@ -78,13 +78,10 @@ def sync_receiver_sources() -> None:
         if src.is_file():
             shutil.copy2(src, DEST_PKG_RECEIVER / name)
 
-    check_src = INSTALLER_SRC / "check_receiver_ready.ps1"
+    check_src = PRINT_RECEIVER_SRC / "check_receiver_ready.ps1"
     if check_src.is_file():
         _copy_utf8_file(check_src, DEST_PKG_RECEIVER / "check_receiver_ready.ps1")
-    else:
-        alt = PRINT_RECEIVER_SRC / "check_receiver_ready.ps1"
-        if alt.is_file():
-            _copy_utf8_file(alt, DEST_PKG_RECEIVER / "check_receiver_ready.ps1")
+        _copy_utf8_file(check_src, INSTALLER_SRC / "check_receiver_ready.ps1")
 
     config_src = PRINT_RECEIVER_SRC / "config.json"
     if config_src.is_file():

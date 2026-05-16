@@ -28,6 +28,30 @@
 
 
 
+  var MEDICAL_LOADING_STEPS = [
+
+    "인증 확인 중입니다.",
+
+    "진료내역을 가져오고 있습니다.",
+
+    "진료내역을 정리하고 있습니다.",
+
+    "진료내역 조회가 완료되었습니다.",
+
+  ];
+
+  var INSURANCE_LOADING_STEPS = [
+
+    "인증 확인 중입니다.",
+
+    "보험가입이력을 가져오고 있습니다.",
+
+    "보험계약 정보를 정리하고 있습니다.",
+
+    "보험가입이력 조회가 완료되었습니다.",
+
+  ];
+
   var ACTION_LOADING = {
 
     confirm_medical_auth: {
@@ -36,9 +60,9 @@
 
       buttonLabel: "진료내역을 가져오는 중입니다...",
 
-      line1: "진료내역을 확인하고 있습니다.",
+      line1: MEDICAL_LOADING_STEPS[0],
 
-      line2: "잠시만 기다려 주세요.",
+      line2: "",
 
     },
 
@@ -48,9 +72,9 @@
 
       buttonLabel: "보험가입이력을 가져오는 중입니다...",
 
-      line1: "보험가입이력을 확인하고 있습니다.",
+      line1: INSURANCE_LOADING_STEPS[0],
 
-      line2: "잠시만 기다려 주세요.",
+      line2: "",
 
     },
 
@@ -149,6 +173,104 @@
     if (activeIdx < 0 || keyIdx < 0) return false;
 
     return keyIdx < activeIdx;
+
+  }
+
+
+
+  function renderProgressBadges(badges) {
+
+    var list = api.progressBadgesEl;
+
+    if (!list || !badges || !badges.length) {
+
+      if (list) list.innerHTML = "";
+
+      return;
+
+    }
+
+    list.innerHTML = badges
+
+      .map(function (badge) {
+
+        var cls = "customer-find-progress__badge";
+
+        if (badge.active) cls += " is-active";
+
+        if (badge.done) cls += " is-done";
+
+        return (
+
+          '<li class="' +
+
+          cls +
+
+          '"><span>' +
+
+          api.escapeHtml(badge.label || "") +
+
+          "</span></li>"
+
+        );
+
+      })
+
+      .join("");
+
+  }
+
+
+
+  function runStagedLoading(action, steps, onComplete) {
+
+    var cfg = ACTION_LOADING[action];
+
+    if (!cfg || !steps || !steps.length) {
+
+      if (onComplete) onComplete();
+
+      return;
+
+    }
+
+    advanceInFlight = true;
+
+    if (api.kakaoHighlightEl) api.kakaoHighlightEl.hidden = true;
+
+    var index = 0;
+
+    function tick() {
+
+      if (index >= steps.length) {
+
+        if (onComplete) onComplete();
+
+        return;
+
+      }
+
+      setLoadingUi({
+
+        phase: cfg.phase,
+
+        line1: steps[index],
+
+        line2: "",
+
+        buttonLabel: cfg.buttonLabel,
+
+      });
+
+      index += 1;
+
+      setTimeout(tick, 850 + Math.floor(Math.random() * 350));
+
+    }
+
+    setLoadingUi(cfg);
+
+    setTimeout(tick, 400);
 
   }
 
@@ -324,6 +446,38 @@
 
     }
 
+    if (api.progressStageTitleEl) {
+
+      if (st.progress_title) {
+
+        api.progressStageTitleEl.textContent = st.progress_title;
+
+        api.progressStageTitleEl.hidden = false;
+
+      } else {
+
+        api.progressStageTitleEl.hidden = true;
+
+      }
+
+    }
+
+    if (api.kakaoHighlightEl) {
+
+      var showBanner = !!(st.show_kakao_banner || st.kakao_highlight);
+
+      api.kakaoHighlightEl.hidden = !showBanner;
+
+      if (api.kakaoHighlightTextEl && st.kakao_highlight) {
+
+        api.kakaoHighlightTextEl.textContent = st.kakao_highlight;
+
+      }
+
+    }
+
+    renderProgressBadges(st.progress_badges || []);
+
     if (api.progressHintEl) {
 
       var showHint =
@@ -336,7 +490,7 @@
 
         api.progressHintEl.textContent =
 
-          st.kakao_hint || "휴대폰에서 인증을 완료한 뒤 아래 버튼을 눌러주세요.";
+          st.kakao_hint || "휴대폰에서 인증을 완료한 뒤 아래 버튼을 눌러 주세요.";
 
         api.progressHintEl.hidden = false;
 
@@ -492,35 +646,9 @@
 
 
 
-  function callAdvance(action) {
+  function callAdvanceFetch(action) {
 
     if (!api.state.flowId) return Promise.resolve();
-
-    if (advanceInFlight) return Promise.resolve();
-
-
-
-    var stCached = api.state.findStatus;
-
-    if (stCached && stCached.done) {
-
-      return fetchResults();
-
-    }
-
-
-
-    var loadingCfg = ACTION_LOADING[action] || null;
-
-    if (loadingCfg) setLoadingUi(loadingCfg);
-
-    else if (action === "retry" && api.authConfirmBtn) {
-
-      api.authConfirmBtn.disabled = true;
-
-      api.authConfirmBtn.classList.add("is-busy");
-
-    }
 
 
 
@@ -712,6 +840,66 @@
 
 
 
+  function callAdvance(action) {
+
+    if (!api.state.flowId) return Promise.resolve();
+
+    if (advanceInFlight) return Promise.resolve();
+
+
+
+    var stCached = api.state.findStatus;
+
+    if (stCached && stCached.done) {
+
+      return fetchResults();
+
+    }
+
+
+
+    if (action === "retry" && api.authConfirmBtn) {
+
+      api.authConfirmBtn.disabled = true;
+
+      api.authConfirmBtn.classList.add("is-busy");
+
+      return callAdvanceFetch(action);
+
+    }
+
+
+
+    if (action === "confirm_medical_auth" || action === "confirm_insurance_auth") {
+
+      var steps =
+
+        action === "confirm_medical_auth"
+
+          ? MEDICAL_LOADING_STEPS
+
+          : INSURANCE_LOADING_STEPS;
+
+      return new Promise(function (resolve) {
+
+        runStagedLoading(action, steps, function () {
+
+          callAdvanceFetch(action).then(resolve);
+
+        });
+
+      });
+
+    }
+
+
+
+    return callAdvanceFetch(action);
+
+  }
+
+
+
   function fetchResults() {
 
     return fetch(
@@ -772,33 +960,113 @@
 
 
 
+  function triggerAutoClaimFromResults() {
+
+    if (api.resultsEl) api.resultsEl.hidden = true;
+
+    var inline = document.getElementById("customer-ai-inline");
+
+    if (inline) inline.hidden = true;
+
+    if (api.logEl) {
+
+      api.logEl.hidden = false;
+
+      api.logEl.classList.remove("customer-chat-log--after-results");
+
+    }
+
+    if (api.state) {
+
+      api.state.pendingAutoClaimOnReturn = true;
+
+      api.saveState();
+
+    }
+
+    if (api.startAutoClaimPhase) api.startAutoClaimPhase();
+
+  }
+
+
+
   function buildInlineAiHtml(aiBlock) {
 
     var ai = aiBlock || {};
+
+    var reviewCount =
+
+      ai.review_candidate_count != null
+
+        ? ai.review_candidate_count
+
+        : ai.high_count != null
+
+          ? ai.high_count
+
+          : ai.candidate_count || 0;
+
+    var actualLossHtml = "";
+
+    (ai.actual_loss_products || []).forEach(function (p) {
+
+      actualLossHtml +=
+
+        "<li>" +
+
+        api.escapeHtml(p.company_name || "—") +
+
+        " · " +
+
+        api.escapeHtml(p.product_name || "—") +
+
+        "</li>";
+
+    });
+
+    if (!actualLossHtml) {
+
+      actualLossHtml =
+
+        "<li>" + api.escapeHtml(ai.actual_loss_label || "—") + "</li>";
+
+    }
 
     return (
 
       "<div class=\"customer-ai-inline-card\">" +
 
-      "<p class=\"customer-ai-inline-card__metric\">청구 검토 후보 <strong>" +
+      "<div class=\"customer-ai-inline-card__head\">" +
 
-      api.escapeHtml(String(ai.high_count != null ? ai.high_count : ai.candidate_count || 0)) +
+      "<h3 class=\"customer-ai-inline-card__title\">AI 분석 요약</h3>" +
 
-      "건</strong></p>" +
+      "<button type=\"button\" class=\"customer-ai-inline-card__auto-claim\" data-action=\"auto-claim-inline\">자동청구를 이용하기</button>" +
 
-      "<p class=\"customer-ai-inline-card__metric\">우선 검토 금액 <strong>" +
+      "</div>" +
 
-      api.escapeHtml(ai.priority_review_display || ai.estimated_display || "—") +
+      "<div class=\"customer-ai-inline-card__grid\">" +
 
-      "</strong></p>" +
+      "<article class=\"customer-ai-inline-card__stat\">" +
 
-      "<p class=\"customer-ai-inline-card__badge\">" +
+      "<span class=\"customer-ai-inline-card__stat-label\">우선 검토 후보</span>" +
 
-      api.escapeHtml(ai.actual_loss_label || "실손보험 확인") +
+      "<strong class=\"customer-ai-inline-card__stat-value\">" +
 
-      "</p>" +
+      api.escapeHtml(String(reviewCount)) +
 
-      "<h3 class=\"customer-ai-inline-card__subtitle\">우선 확인할 진료</h3>" +
+      "건</strong></article>" +
+
+      "<article class=\"customer-ai-inline-card__stat\">" +
+
+      "<span class=\"customer-ai-inline-card__stat-label\">검토 가능 금액</span>" +
+
+      "<strong class=\"customer-ai-inline-card__stat-value\">" +
+
+      api.escapeHtml(ai.review_amount_display || ai.priority_review_display || ai.estimated_display || "—") +
+
+      "</strong></article></div>" +
+
+      "<h4 class=\"customer-ai-inline-card__subtitle\">우선 확인 진료</h4>" +
 
       "<ul class=\"customer-view-list\">" +
 
@@ -830,7 +1098,15 @@
 
       "</ul>" +
 
-      "<h3 class=\"customer-ai-inline-card__subtitle\">필요한 서류</h3>" +
+      "<h4 class=\"customer-ai-inline-card__subtitle\">관련 실손보험</h4>" +
+
+      "<ul class=\"customer-view-list customer-ai-inline-card__actual-loss\">" +
+
+      actualLossHtml +
+
+      "</ul>" +
+
+      "<h4 class=\"customer-ai-inline-card__subtitle\">필요한 서류</h4>" +
 
       "<ul class=\"customer-view-list\">" +
 
@@ -869,6 +1145,12 @@
     if (!panel || !body || !data) return;
 
     body.innerHTML = buildInlineAiHtml(data.ai || {});
+
+    body.querySelectorAll("[data-action=\"auto-claim-inline\"]").forEach(function (btn) {
+
+      btn.addEventListener("click", triggerAutoClaimFromResults);
+
+    });
 
     panel.hidden = false;
 
@@ -940,49 +1222,21 @@
 
       title = "진료내역";
 
-      var visits = (data.medical && data.medical.visits) || [];
+      var medUrl = data.medical && data.medical.detail_url;
 
-      if (!visits.length) {
-
-        html = "<p>표시할 진료내역이 없습니다.</p>";
-
-      } else {
+      if (medUrl) {
 
         html =
 
-          "<ul class=\"customer-view-list\">" +
+          '<iframe class="customer-view-sheet__iframe" title="진료내역 상세" src="' +
 
-          visits
+          medUrl.replace(/"/g, "&quot;") +
 
-            .map(function (v) {
+          '"></iframe>';
 
-              return (
+      } else {
 
-                "<li><strong>" +
-
-                api.escapeHtml(v.visit_date) +
-
-                "</strong> " +
-
-                api.escapeHtml(v.hospital_name) +
-
-                "<br><span>" +
-
-                api.escapeHtml(v.department) +
-
-                " · " +
-
-                api.escapeHtml(v.diagnosis) +
-
-                "</span></li>"
-
-              );
-
-            })
-
-            .join("") +
-
-          "</ul>";
+        html = "<p>표시할 진료내역이 없습니다.</p>";
 
       }
 
@@ -990,39 +1244,23 @@
 
       title = "보험가입이력";
 
-      var companies = (data.insurance && data.insurance.companies) || [];
+      var insUrl = data.insurance && data.insurance.detail_url;
 
-      html =
+      if (insUrl) {
 
-        "<p>가입 상품 " +
+        html =
 
-        api.escapeHtml(String(data.insurance.product_count || 0)) +
+          '<iframe class="customer-view-sheet__iframe" title="보험가입이력 상세" src="' +
 
-        "건</p><ul class=\"customer-view-list\">" +
+          insUrl.replace(/"/g, "&quot;") +
 
-        companies
+          '"></iframe>';
 
-          .map(function (c) {
+      } else {
 
-            return (
+        html = "<p>표시할 보험가입이력이 없습니다.</p>";
 
-              "<li>" +
-
-              api.escapeHtml(c.company_name) +
-
-              " <span>(" +
-
-              api.escapeHtml(String(c.product_count)) +
-
-              "건)</span></li>"
-
-            );
-
-          })
-
-          .join("") +
-
-        "</ul>";
+      }
 
     } else if (kind === "ai") {
 
@@ -1306,17 +1544,7 @@
 
   if (autoClaimCta) {
 
-    autoClaimCta.addEventListener("click", function () {
-
-      if (api.resultsEl) api.resultsEl.hidden = true;
-
-      var inline = document.getElementById("customer-ai-inline");
-
-      if (inline) inline.hidden = true;
-
-      if (api.startAutoClaimPhase) api.startAutoClaimPhase();
-
-    });
+    autoClaimCta.addEventListener("click", triggerAutoClaimFromResults);
 
   }
 

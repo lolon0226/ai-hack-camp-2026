@@ -54,7 +54,7 @@ function Get-DefaultConfigJson {
   "failed_dir": "C:\\RedRibbonDemo\\failed",
   "log_dir": "C:\\RedRibbonDemo\\logs",
   "hospital_name": "TEST_HOSPITAL",
-  "printer_name": "redribbon",
+  "printer_name": "RedRibbon Printer",
   "poll_interval_seconds": 2,
   "stable_wait_seconds": 2,
   "upload_timeout_seconds": 900
@@ -81,7 +81,12 @@ function Find-PdfCreatorInstall {
     return $null
 }
 
+$script:RedRibbonPrinterName = "RedRibbon Printer"
+
 function Test-RedRibbonPrinterPresent {
+    if (Get-Printer -Name $script:RedRibbonPrinterName -ErrorAction SilentlyContinue) {
+        return $true
+    }
     $names = @("redribbon", "RedRibbon")
     foreach ($n in $names) {
         if (Get-Printer -Name $n -ErrorAction SilentlyContinue) {
@@ -89,17 +94,71 @@ function Test-RedRibbonPrinterPresent {
         }
     }
     try {
-        $all = Get-Printer -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
-        foreach ($n in $names) {
-            if ($all -contains $n) { return $true }
-        }
-        foreach ($p in $all) {
-            if ($p -match 'redribbon|RedRibbon|Ribbon') { return $true }
+        foreach ($p in (Get-Printer -ErrorAction SilentlyContinue)) {
+            if ($p.Name -match 'RedRibbon|redribbon') { return $true }
         }
     } catch {
         # ignore
     }
     return $false
+}
+
+function Ensure-RedRibbonPrinter {
+    <#
+    PDFCreator 기준 프린터에서 드라이버·포트를 복사해 RedRibbon Printer를 생성합니다.
+    #>
+    $result = @{
+        PrinterName   = $script:RedRibbonPrinterName
+        Success       = $false
+        AlreadyExists = $false
+        Created       = $false
+        Skipped       = $false
+        SkipReason    = ""
+        DriverName    = ""
+        PortName      = ""
+    }
+
+    $existing = Get-Printer -Name $script:RedRibbonPrinterName -ErrorAction SilentlyContinue
+    if ($existing) {
+        $result.AlreadyExists = $true
+        $result.Success = $true
+        $result.DriverName = [string]$existing.DriverName
+        $result.PortName = [string]$existing.PortName
+        Write-InstallLog "redribbon_printer: already exists DriverName=$($result.DriverName) PortName=$($result.PortName)"
+        return $result
+    }
+
+    $base = Get-Printer -Name "PDFCreator" -ErrorAction SilentlyContinue
+    if (-not $base) {
+        $result.Skipped = $true
+        $result.SkipReason = "pdfcreator_base_missing"
+        Write-InstallLog "redribbon_printer: skipped (PDFCreator base printer not found)"
+        return $result
+    }
+
+    $driver = [string]$base.DriverName
+    $port = [string]$base.PortName
+    if (-not $driver) { $driver = "PDFCreator" }
+    if (-not $port) { $port = "pdfcmon" }
+
+    try {
+        Add-Printer -Name $script:RedRibbonPrinterName -DriverName $driver -PortName $port -ErrorAction Stop
+        $created = Get-Printer -Name $script:RedRibbonPrinterName -ErrorAction SilentlyContinue
+        if ($created) {
+            $result.Created = $true
+            $result.Success = $true
+            $result.DriverName = [string]$created.DriverName
+            $result.PortName = [string]$created.PortName
+            Write-InstallLog "redribbon_printer: created DriverName=$($result.DriverName) PortName=$($result.PortName)"
+        } else {
+            $result.SkipReason = "verify_failed_after_add"
+            Write-InstallLog "redribbon_printer: Add-Printer returned but printer not listed"
+        }
+    } catch {
+        $result.SkipReason = $_.Exception.Message
+        Write-InstallLog "redribbon_printer: create failed: $($_.Exception.Message)"
+    }
+    return $result
 }
 
 function Try-ConfigurePdfCreatorAutoSave {
@@ -181,20 +240,74 @@ function Try-ConfigurePdfCreatorAutoSave {
         }
     }
 
+    if ($installPath) {
+        $cliOk = Try-PdfCreatorCliRestorePrinters -PdfCreatorDir $installPath
+        if ($cliOk) {
+            $result.Note = "cli_restore_printers_ok"
+            $result.PrinterFound = Test-RedRibbonPrinterPresent
+        }
+    }
+
     if (-not $result.PdfCreatorInstalled) {
         $result.Note = "PDFCreator not detected"
     } elseif (-not $result.AutoConfigured) {
-        $result.Note = "auto_config_uncertain"
+        if (-not $result.Note) {
+            $result.Note = "auto_config_uncertain"
+        }
     }
     return $result
 }
 
+function Try-PdfCreatorCliRestorePrinters {
+    param([string]$PdfCreatorDir)
+    if (-not $PdfCreatorDir) { return $false }
+    $cliNames = @("PDFCreator-cli.exe", "pdfcreator-cli.exe")
+    foreach ($name in $cliNames) {
+        $cliPath = Join-Path $PdfCreatorDir $name
+        if (-not (Test-Path $cliPath)) { continue }
+        try {
+            Write-InstallLog "pdfcreator_cli: $cliPath RestorePrinters"
+            $proc = Start-Process -FilePath $cliPath -ArgumentList "RestorePrinters" -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            if ($proc.ExitCode -eq 0) {
+                Write-InstallLog "pdfcreator_cli: RestorePrinters OK"
+                return $true
+            }
+            Write-InstallLog "pdfcreator_cli: RestorePrinters exit=$($proc.ExitCode)"
+        } catch {
+            Write-InstallLog "pdfcreator_cli_failed: $($_.Exception.Message)"
+        }
+    }
+    $pathCli = Get-Command "PDFCreator-cli.exe" -ErrorAction SilentlyContinue
+    if ($pathCli) {
+        try {
+            $proc = Start-Process -FilePath $pathCli.Source -ArgumentList "RestorePrinters" -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            return ($proc.ExitCode -eq 0)
+        } catch {
+            Write-InstallLog "pdfcreator_cli_path_failed: $($_.Exception.Message)"
+        }
+    }
+    return $false
+}
+
 function Show-ManualPdfCreatorGuide {
+    param([string]$Reason = "autosave")
     Write-Host ""
-    Write-Host "=== PDFCreator manual setup ===" -ForegroundColor Yellow
-    Write-Host "Set redribbon printer/profile auto-save folder to:"
-    Write-Host "  C:\RedRibbonDemo\incoming"
-    Write-Host "See SETUP_VIRTUAL_PRINTER.md in the install folder for details."
+    Write-Host "=== PDFCreator 추가 설정 (필요 시) ===" -ForegroundColor Yellow
+    if ($Reason -eq "pdfcreator_missing") {
+        Write-Host "PDFCreator가 설치되어 있지 않아 RedRibbon Printer 자동 생성은 건너뜁니다." -ForegroundColor Yellow
+        Write-Host "PDFCreator 설치 후 설치 스크립트를 다시 실행하거나 프린터를 수동으로 추가하세요." -ForegroundColor Yellow
+    } else {
+        Write-Host "RedRibbon Printer의 PDF 자동저장 폴더가 C:\RedRibbonDemo\incoming 인지 PDFCreator에서 확인해 주세요." -ForegroundColor Yellow
+    }
+    Write-Host "자세한 내용: SETUP_VIRTUAL_PRINTER.md" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+function Show-InstallSuccessGuide {
+    Write-Host ""
+    Write-Host "PDFCreator 기반 RedRibbon 전용 가상프린터가 자동 구성되었습니다." -ForegroundColor Green
+    Write-Host "병원 문서를 RedRibbon Printer로 인쇄하면 C:\RedRibbonDemo\incoming 폴더로 저장되고," -ForegroundColor Cyan
+    Write-Host "Receiver Engine이 이를 서버로 전송합니다." -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -317,22 +430,46 @@ if (-not $SkipDesktopShortcut) {
     }
 }
 
+$printerResult = Ensure-RedRibbonPrinter
+Write-InstallLog "redribbon_printer success=$($printerResult.Success) created=$($printerResult.Created) skipped=$($printerResult.Skipped)"
+
+if ($printerResult.Skipped -and $printerResult.SkipReason -eq "pdfcreator_base_missing") {
+    Write-Host "[WARN] PDFCreator가 설치되어 있지 않아 RedRibbon Printer 자동 생성은 건너뜁니다." -ForegroundColor Yellow
+    Show-ManualPdfCreatorGuide -Reason "pdfcreator_missing"
+} elseif ($printerResult.Success) {
+    if ($printerResult.Created) {
+        Write-Host "[OK] RedRibbon Printer created (DriverName=$($printerResult.DriverName) PortName=$($printerResult.PortName))" -ForegroundColor Green
+    } else {
+        Write-Host "[OK] RedRibbon Printer already exists" -ForegroundColor Green
+    }
+} else {
+    Write-Host "[WARN] RedRibbon Printer 자동 생성에 실패했습니다. PDFCreator 설치·PDFCreator 프린터 존재 여부를 확인하세요." -ForegroundColor Yellow
+    if ($printerResult.SkipReason) {
+        Write-Host "       $($printerResult.SkipReason)" -ForegroundColor DarkYellow
+    }
+}
+
 $pdfResult = Try-ConfigurePdfCreatorAutoSave -TargetIncoming $incomingDir
 Write-InstallLog "pdfcreator installed=$($pdfResult.PdfCreatorInstalled) auto=$($pdfResult.AutoConfigured) printer=$($pdfResult.PrinterFound)"
 
 if ($pdfResult.PdfCreatorInstalled) {
     Write-Host "[OK] PDFCreator found: $($pdfResult.InstallPath)" -ForegroundColor Green
-} else {
-    Write-Host "[WARN] PDFCreator not found — install PDFCreator and configure redribbon profile" -ForegroundColor Yellow
+} elseif (-not $printerResult.Skipped) {
+    Write-Host "[WARN] PDFCreator application path not found (printer may still work)" -ForegroundColor Yellow
 }
 
 if ($pdfResult.AutoConfigured) {
-    Write-Host "[OK] PDFCreator auto-save path update attempted for redribbon profile" -ForegroundColor Green
-} else {
+    Write-Host "[OK] PDFCreator auto-save path update attempted for RedRibbon Printer profile" -ForegroundColor Green
+} elseif ($printerResult.Success) {
+    Write-Host "[INFO] PDF 자동저장 폴더(C:\RedRibbonDemo\incoming)를 PDFCreator에서 확인해 주세요." -ForegroundColor Yellow
+}
+
+if ($printerResult.Success) {
+    Show-InstallSuccessGuide
+} elseif (-not ($printerResult.Skipped -and $printerResult.SkipReason -eq "pdfcreator_base_missing")) {
     Show-ManualPdfCreatorGuide
 }
 
-Write-Host ""
 Write-Host "Install complete: $InstallRoot" -ForegroundColor Cyan
 Write-Host "  Receiver: C:\RedRibbonDemo\run_redribbon_receiver.ps1"
 Write-Host "  Check:    C:\RedRibbonDemo\check_receiver_ready.ps1"

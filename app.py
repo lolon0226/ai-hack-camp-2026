@@ -99,6 +99,7 @@ from services.insurance_summary import (
     compute_insured_summary_package,
     flatten_imported_insurance_records,
     insurance_summary_from_records,
+    is_active_contract_status,
     prepare_insurance_company_groups_for_template,
     resolve_stored_insurance_for_display,
 )
@@ -959,6 +960,24 @@ def _normalize_basic_medical_row(raw: Any) -> dict[str, str]:
             "resSelfPayAmount",
             "patient_paid_amount",
             "copay_amount",
+        ),
+        "total_amount": _pick_medical_field(
+            raw,
+            "resTotalAmt",
+            "resTotalAmount",
+            "resTreatAmt",
+            "resMedicalTotalAmt",
+            "total_amount",
+            "total_cost",
+        ),
+        "public_insurance_amount": _pick_medical_field(
+            raw,
+            "resPublicChargeAmt",
+            "resInsurerAmt",
+            "resNhisAmt",
+            "resHealthInsurerAmt",
+            "public_insurance_amount",
+            "insurer_amount",
         ),
     }
 
@@ -3787,11 +3806,16 @@ def _create_customer_find_flow(intake: dict[str, Any]) -> str:
     return new_id
 
 
-_CUSTOMER_FIND_KAKAO_SENT_MESSAGE = (
-    "카카오 인증 요청이 발송되었습니다. 휴대폰에서 인증을 완료해 주세요."
-)
+_CUSTOMER_FIND_KAKAO_HIGHLIGHT = "카카오 인증 요청이 발송되었습니다."
 _CUSTOMER_FIND_KAKAO_HINT = (
-    "휴대폰에서 인증을 완료한 뒤 아래 버튼을 눌러주세요."
+    "휴대폰 카카오톡 또는 인증 앱에서 본인인증을 완료한 뒤 아래 버튼을 눌러 주세요."
+)
+_CUSTOMER_FIND_PROGRESS_BADGES: tuple[tuple[str, str], ...] = (
+    ("auth_sent", "인증 요청"),
+    ("auth_waiting", "인증 대기"),
+    ("auth_done", "인증 완료"),
+    ("organizing", "자료 정리 중"),
+    ("done", "완료"),
 )
 
 
@@ -3816,91 +3840,311 @@ def _customer_find_init_demo_flow(entry: dict[str, Any]) -> None:
     entry["codef_realtime_call_skipped"] = True
 
 
+_CUSTOMER_FIND_BADGE_ORDER: tuple[str, ...] = tuple(
+    key for key, _label in _CUSTOMER_FIND_PROGRESS_BADGES
+)
+
+
+def _badge_done_before(active: str, key: str) -> bool:
+    try:
+        active_idx = _CUSTOMER_FIND_BADGE_ORDER.index(active)
+        key_idx = _CUSTOMER_FIND_BADGE_ORDER.index(key)
+    except ValueError:
+        return False
+    return key_idx < active_idx
+
+
+def _customer_find_progress_badge_active(phase: str) -> str:
+    """진행 카드 상태 배지 활성 키."""
+    if phase in ("medical_auth_waiting", "insurance_auth_waiting"):
+        return "auth_waiting"
+    if phase in ("medical_loading", "insurance_loading"):
+        return "organizing"
+    if phase in ("medical_done", "insurance_done", "ai_preparing"):
+        return "auth_done"
+    if phase == "complete":
+        return "done"
+    if phase == "saving":
+        return "auth_sent"
+    if phase.endswith("_failed") or phase == "failed":
+        return "auth_waiting"
+    return "auth_sent"
+
+
+def _customer_insurance_is_uncertain(product: dict[str, Any]) -> bool:
+    label = str(
+        product.get("source_type_label") or product.get("source_type") or ""
+    ).strip()
+    name = str(
+        product.get("insurance_name") or product.get("product_name") or ""
+    ).strip()
+    blob = f"{label} {name}"
+    for token in ("지급 사유 미상", "지급내역 기반 추정", "지급내역추정"):
+        if token in blob:
+            return True
+    return False
+
+
+def _customer_insurance_is_actual_loss(product: dict[str, Any]) -> bool:
+    name = str(
+        product.get("insurance_name") or product.get("product_name") or ""
+    ).strip()
+    category = str(product.get("category") or "").strip()
+    if category == "실손":
+        return True
+    for token in ("실손", "실비", "의료비"):
+        if token in name:
+            return True
+    coverages = product.get("coverages")
+    if isinstance(coverages, list):
+        for cov in coverages:
+            if not isinstance(cov, dict):
+                continue
+            cov_name = str(cov.get("coverage_name") or "")
+            if any(token in cov_name for token in ("실손", "실비", "의료비")):
+                return True
+    return False
+
+
+def _customer_insurance_status_tier(product: dict[str, Any]) -> int:
+    status = str(
+        product.get("contract_status") or product.get("status") or ""
+    ).strip()
+    if any(token in status for token in ("정상", "유지")):
+        return 0
+    if "해지" in status:
+        return 5
+    if "만기" in status:
+        return 6
+    if any(token in status for token in ("실효", "소멸")):
+        return 7
+    return 3
+
+
+def _customer_insurance_sort_key(product: dict[str, Any]) -> tuple[Any, ...]:
+    company = str(
+        product.get("company_name") or product.get("company") or ""
+    ).strip()
+    name = str(
+        product.get("insurance_name") or product.get("product_name") or ""
+    ).strip()
+    missing_names = 1 if (not company or company == "—") and (
+        not name or name == "—"
+    ) else 0
+    actual_loss = 0 if _customer_insurance_is_actual_loss(product) else 1
+    active = 0 if (
+        product.get("_active")
+        or product.get("is_active_status")
+        or is_active_contract_status(
+            product.get("contract_status") or product.get("status")
+        )
+    ) else 1
+    tier = _customer_insurance_status_tier(product)
+    health_other = 0 if any(
+        token in name for token in ("건강", "종합", "질병", "상해", "암")
+    ) else 1
+    return (tier, actual_loss, active, health_other, missing_names, name, company)
+
+
+def _customer_prepare_insurance_product_display(
+    product: dict[str, Any],
+) -> dict[str, Any]:
+    row = dict(product) if isinstance(product, dict) else {}
+    row["show_actual_loss_badge"] = _customer_insurance_is_actual_loss(row)
+    coverages = row.get("coverages")
+    coverage_names: list[str] = []
+    if isinstance(coverages, list):
+        for cov in coverages[:6]:
+            if not isinstance(cov, dict):
+                continue
+            label = str(cov.get("coverage_name") or "").strip()
+            if label and label != "—":
+                coverage_names.append(label)
+    row["coverage_names_summary"] = (
+        ", ".join(coverage_names) if coverage_names else "—"
+    )
+    return row
+
+
+def _customer_find_insurance_view_groups(
+    entry: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """고객용 보험 표시: 회사별 정렬 그룹 + 참고(불확실) 상품."""
+    _restore_saved_insurance_records_if_needed(entry)
+    insured_summary = entry.get("insured_summary")
+    groups: list[dict[str, Any]] = []
+    if isinstance(insured_summary, dict):
+        raw_groups = insured_summary.get("company_groups")
+        if isinstance(raw_groups, list):
+            groups = [dict(g) for g in raw_groups if isinstance(g, dict)]
+    if not groups:
+        fallback = entry.get("insurance_company_groups") or []
+        if isinstance(fallback, list):
+            groups = prepare_insurance_company_groups_for_template(fallback)
+
+    display_groups: list[dict[str, Any]] = []
+    reference_products: list[dict[str, Any]] = []
+
+    for group in groups:
+        products_raw = group.get("products") or []
+        if not isinstance(products_raw, list):
+            continue
+        primary: list[dict[str, Any]] = []
+        for item in products_raw:
+            if not isinstance(item, dict):
+                continue
+            if _customer_insurance_is_uncertain(item):
+                reference_products.append(
+                    _customer_prepare_insurance_product_display(item)
+                )
+            else:
+                primary.append(item)
+        primary.sort(key=_customer_insurance_sort_key)
+        prepared = [
+            _customer_prepare_insurance_product_display(p) for p in primary
+        ]
+        if not prepared:
+            continue
+        display_groups.append(
+            {
+                **group,
+                "company_name": str(
+                    group.get("company_name") or group.get("company") or "—"
+                ),
+                "contract_count": len(prepared),
+                "products": prepared,
+            }
+        )
+
+    reference_products.sort(key=_customer_insurance_sort_key)
+    reference_products = [
+        _customer_prepare_insurance_product_display(p)
+        for p in reference_products
+    ]
+    return display_groups, reference_products
+
+
 def _customer_find_status_message(entry: dict[str, Any]) -> dict[str, Any]:
     """고객용 진행 상태(카카오 인증 시연 흐름)."""
     phase = str(entry.get("customer_find_phase") or "saving")
     presets: dict[str, dict[str, Any]] = {
         "saving": {
             "phase": "saving",
-            "message": "고객정보 저장 중",
+            "progress_title": "지난 보험금 찾기 진행 중",
+            "message": "고객정보를 저장하고 있습니다.",
             "subtitle": None,
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
             "auth_action": None,
             "auth_button_label": None,
         },
         "medical_auth_waiting": {
             "phase": "medical_auth_waiting",
-            "message": _CUSTOMER_FIND_KAKAO_SENT_MESSAGE,
-            "subtitle": "진료내역 조회를 위해 카카오 인증을 요청합니다.",
+            "progress_title": "진료내역 조회를 위한 본인인증",
+            "message": _CUSTOMER_FIND_KAKAO_HINT,
+            "subtitle": None,
+            "kakao_highlight": _CUSTOMER_FIND_KAKAO_HIGHLIGHT,
+            "show_kakao_banner": True,
             "auth_action": "confirm_medical_auth",
-            "auth_button_label": "진료내역 인증 완료",
+            "auth_button_label": "인증 완료 후 진료내역 가져오기",
         },
         "medical_loading": {
             "phase": "medical_loading",
-            "message": "잠시만 기다려 주세요.",
-            "subtitle": "진료내역을 확인하고 있습니다.",
+            "progress_title": "진료내역 조회를 위한 본인인증",
+            "message": "진료내역을 가져오고 있습니다.",
+            "subtitle": None,
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
             "auth_action": None,
             "auth_button_label": None,
         },
         "medical_failed": {
             "phase": "medical_failed",
+            "progress_title": "진료내역 조회",
             "message": "진료내역을 가져오지 못했습니다. 다시 시도해 주세요.",
             "subtitle": None,
-            "auth_action": "confirm_medical_auth",
-            "auth_button_label": "진료내역 인증 완료 다시 시도",
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
+            "auth_action": "retry",
+            "auth_button_label": "다시 시도",
         },
         "medical_done": {
             "phase": "medical_done",
-            "message": "진료내역을 가져왔습니다.",
-            "subtitle": None,
+            "progress_title": "진료내역 조회 완료",
+            "message": "진료내역 조회가 완료되었습니다.",
+            "subtitle": "보험가입이력 본인인증을 진행합니다.",
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
             "auth_action": None,
             "auth_button_label": None,
         },
         "insurance_auth_waiting": {
             "phase": "insurance_auth_waiting",
-            "message": "보험가입이력 조회를 위해 카카오 인증을 요청합니다.",
-            "subtitle": "진료내역을 가져왔습니다.",
+            "progress_title": "보험가입이력 조회를 위한 본인인증",
+            "message": _CUSTOMER_FIND_KAKAO_HINT,
+            "subtitle": None,
+            "kakao_highlight": _CUSTOMER_FIND_KAKAO_HIGHLIGHT,
+            "show_kakao_banner": True,
             "auth_action": "confirm_insurance_auth",
-            "auth_button_label": "보험가입이력 인증 완료",
+            "auth_button_label": "인증 완료 후 보험가입이력 가져오기",
         },
         "insurance_loading": {
             "phase": "insurance_loading",
-            "message": "잠시만 기다려 주세요.",
-            "subtitle": "보험가입이력을 확인하고 있습니다.",
+            "progress_title": "보험가입이력 조회를 위한 본인인증",
+            "message": "보험가입이력을 가져오고 있습니다.",
+            "subtitle": None,
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
             "auth_action": None,
             "auth_button_label": None,
         },
         "insurance_failed": {
             "phase": "insurance_failed",
+            "progress_title": "보험가입이력 조회",
             "message": "보험가입이력을 가져오지 못했습니다. 다시 시도해 주세요.",
             "subtitle": None,
-            "auth_action": "confirm_insurance_auth",
-            "auth_button_label": "보험가입이력 인증 완료 다시 시도",
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
+            "auth_action": "retry",
+            "auth_button_label": "다시 시도",
         },
         "insurance_done": {
             "phase": "insurance_done",
-            "message": "보험가입이력을 가져왔습니다.",
-            "subtitle": None,
+            "progress_title": "보험가입이력 조회 완료",
+            "message": "보험가입이력 조회가 완료되었습니다.",
+            "subtitle": "AI 분석을 준비하고 있습니다.",
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
             "auth_action": None,
             "auth_button_label": None,
         },
         "ai_preparing": {
             "phase": "ai_preparing",
-            "message": "AI 분석 결과를 준비하고 있습니다.",
-            "subtitle": "보험가입이력을 가져왔습니다.",
+            "progress_title": "AI 분석 준비 중",
+            "message": "청구 검토 후보를 정리하고 있습니다.",
+            "subtitle": None,
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
             "auth_action": None,
             "auth_button_label": None,
         },
         "complete": {
             "phase": "complete",
+            "progress_title": "조회 완료",
             "message": "AI 분석 결과를 준비했습니다.",
-            "subtitle": "보험가입이력을 가져왔습니다.",
+            "subtitle": None,
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
             "auth_action": None,
             "auth_button_label": None,
         },
         "failed": {
             "phase": "failed",
+            "progress_title": "지난 보험금 찾기",
             "message": "처리 중 오류가 발생했습니다. 다시 시도해 주세요.",
             "subtitle": None,
+            "kakao_highlight": None,
+            "show_kakao_banner": False,
             "auth_action": "retry",
             "auth_button_label": "다시 시도",
         },
@@ -3956,13 +4200,28 @@ def _customer_find_status_payload(flow_id: str, entry: dict[str, Any]) -> dict[s
     auth_action = ui.get("auth_action")
     auth_button_label = ui.get("auth_button_label")
     show_auth_button = bool(auth_action and auth_button_label and not done)
+    badge_active = _customer_find_progress_badge_active(phase_key)
+    progress_badges = [
+        {
+            "key": key,
+            "label": label,
+            "active": key == badge_active,
+            "done": _badge_done_before(badge_active, key),
+        }
+        for key, label in _CUSTOMER_FIND_PROGRESS_BADGES
+    ]
     return {
         "flow_id": flow_id,
         "phase": phase_key,
         "stage": phase_key,
         "message": message,
         "subtitle": subtitle,
+        "progress_title": ui.get("progress_title"),
+        "kakao_highlight": ui.get("kakao_highlight"),
+        "show_kakao_banner": bool(ui.get("show_kakao_banner")),
         "kakao_hint": _CUSTOMER_FIND_KAKAO_HINT,
+        "progress_badges": progress_badges,
+        "progress_badge_active": badge_active,
         "medical_status": ms,
         "insurance_status": ins,
         "medical_completed": ms == "completed",
@@ -4281,15 +4540,39 @@ def _customer_find_ai_summary_customer(entry: dict[str, Any]) -> dict[str, Any]:
         or totals.get("total_estimated_display")
         or "—"
     )
+    actual_loss_products: list[dict[str, str]] = []
+    for item in detected[:5]:
+        if not isinstance(item, dict):
+            continue
+        actual_loss_products.append(
+            {
+                "company_name": str(
+                    item.get("company_name") or item.get("company") or "—"
+                ),
+                "product_name": str(
+                    item.get("insurance_name")
+                    or item.get("product_name")
+                    or "—"
+                ),
+            }
+        )
+    review_count = int(
+        totals.get("high_count") or totals.get("candidate_count") or len(high_items) or 0
+    )
     return {
-        "candidate_count": int(totals.get("high_count") or len(high_items) or 0),
+        "candidate_count": review_count,
+        "review_candidate_count": review_count,
         "high_count": len(high_items),
         "estimated_display": priority_review_display,
         "priority_review_display": priority_review_display,
+        "review_amount_display": priority_review_display,
         "has_actual_loss": bool(detected),
         "actual_loss_label": (
-            "실손보험 확인됨" if detected else "실손보험 추가 확인 필요"
+            "관련 실손보험이 확인되었습니다."
+            if detected
+            else "실손보험 추가 확인이 필요할 수 있습니다."
         ),
+        "actual_loss_products": actual_loss_products,
         "priority_visits": priority[:5],
         "documents_needed": docs[:6],
         "disclaimer": "보험금 지급을 확정하는 결과는 아닙니다.",
@@ -4298,6 +4581,8 @@ def _customer_find_ai_summary_customer(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _customer_find_results_payload(flow_id: str, entry: dict[str, Any]) -> dict[str, Any]:
     status = _customer_find_status_payload(flow_id, entry)
+    fid_q = quote(flow_id, safe="")
+    company_groups, reference_products = _customer_find_insurance_view_groups(entry)
     return {
         "ok": True,
         "status": status,
@@ -4305,10 +4590,14 @@ def _customer_find_results_payload(flow_id: str, entry: dict[str, Any]) -> dict[
             "completed": status["medical_completed"],
             "counts": status["medical_counts"],
             "visits": _customer_find_medical_rows_customer(flow_id, entry),
+            "detail_url": f"/customer/find/medical-records?flow_id={fid_q}",
         },
         "insurance": {
             "completed": status["insurance_completed"],
             **_customer_find_insurance_summary_customer(entry),
+            "detail_url": f"/customer/find/insurance-records?flow_id={fid_q}",
+            "company_groups": company_groups,
+            "reference_product_count": len(reference_products),
         },
         "ai": _customer_find_ai_summary_customer(entry),
     }
@@ -4563,6 +4852,59 @@ def api_customer_find_results(flow_id: str | None = None):
             status_code=409,
         )
     return JSONResponse(_customer_find_results_payload(fid, entry))
+
+
+@app.get("/customer/find/medical-records", response_class=HTMLResponse)
+def customer_find_medical_records(request: Request, flow_id: str | None = None):
+    """고객용 진료내역 상세(병원용 전체보기 구조 재사용, CODEF 미호출)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid or fid not in FLOW_STORE:
+        return RedirectResponse("/customer/chat", status_code=303)
+    entry = FLOW_STORE[fid]
+    if not entry.get("customer_find"):
+        return RedirectResponse("/customer/chat", status_code=303)
+    _ensure_medical_records_loaded(fid, entry)
+    if not _medical_records_basic_all(entry):
+        return RedirectResponse("/customer/chat", status_code=303)
+    back = f"/customer/chat?flow_id={quote(fid, safe='')}"
+    return templates.TemplateResponse(
+        request,
+        "customer_result_medical.html",
+        {
+            "flow_id": fid,
+            "back_url": back,
+            **_medical_records_view_context(entry),
+        },
+    )
+
+
+@app.get("/customer/find/insurance-records", response_class=HTMLResponse)
+def customer_find_insurance_records(request: Request, flow_id: str | None = None):
+    """고객용 보험가입이력 상세(병원용 카드 구조 재사용, CODEF 미호출)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid or fid not in FLOW_STORE:
+        return RedirectResponse("/customer/chat", status_code=303)
+    entry = FLOW_STORE[fid]
+    if not entry.get("customer_find"):
+        return RedirectResponse("/customer/chat", status_code=303)
+    _restore_saved_insurance_records_if_needed(entry)
+    company_groups, reference_products = _customer_find_insurance_view_groups(entry)
+    if not company_groups and not reference_products:
+        return RedirectResponse("/customer/chat", status_code=303)
+    customer = entry.get("customer") or {}
+    back = f"/customer/chat?flow_id={quote(fid, safe='')}"
+    return templates.TemplateResponse(
+        request,
+        "customer_result_insurance.html",
+        {
+            "flow_id": fid,
+            "back_url": back,
+            "customer_name": str(customer.get("name") or "고객"),
+            "company_groups": company_groups,
+            "reference_products": reference_products,
+            "customer_view": True,
+        },
+    )
 
 
 @app.get("/hospital/start", response_class=HTMLResponse)

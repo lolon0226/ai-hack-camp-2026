@@ -662,6 +662,85 @@ body.customer-consent-modal-open {
   font-size: 1rem;
 }
 
+.customer-find-progress__stage-title {
+  margin: 0 0 0.65rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.customer-find-progress__stage-title[hidden] {
+  display: none !important;
+}
+
+.customer-find-kakao-highlight {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0 0 0.75rem;
+  padding: 0.85rem 0.9rem;
+  border-radius: 0.65rem;
+  background: linear-gradient(135deg, #fff9c4 0%, #fee500 55%, #ffe566 100%);
+  border: 1px solid #e6c200;
+  box-shadow: 0 2px 8px rgba(254, 229, 0, 0.35);
+}
+
+.customer-find-kakao-highlight[hidden] {
+  display: none !important;
+}
+
+.customer-find-kakao-highlight__icon {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: #191919;
+  color: #fee500;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.75rem;
+  text-align: center;
+}
+
+.customer-find-kakao-highlight__text {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #191919;
+  line-height: 1.4;
+}
+
+.customer-find-progress__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0;
+}
+
+.customer-find-progress__badge {
+  padding: 0.22rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #666;
+  background: #f0f0f0;
+  border: 1px solid #e0e0e0;
+}
+
+.customer-find-progress__badge.is-active {
+  color: #191919;
+  background: #fee500;
+  border-color: #e6c200;
+}
+
+.customer-find-progress__badge.is-done {
+  color: #2e7d32;
+  background: #e8f5e9;
+  border-color: #c8e6c9;
+}
+
 .customer-find-progress__subtitle {
   margin: 0 0 0.35rem;
   font-size: 0.82rem;
@@ -912,8 +991,80 @@ body.customer-view-sheet-open {
 
 .customer-view-sheet__body {
   overflow-y: auto;
-  padding: 0.75rem 0.85rem 1rem;
+  padding: 0;
   font-size: 0.82rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.customer-view-sheet__iframe {
+  display: block;
+  width: 100%;
+  min-height: 70dvh;
+  border: none;
+  background: #fff;
+}
+
+.customer-result-page {
+  background: #f5f6f8;
+}
+
+.customer-result-header {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.75rem 0.85rem;
+  background: #fee500;
+}
+
+.customer-result-header__back {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #191919;
+  text-decoration: none;
+}
+
+.customer-result-header__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.customer-result-main {
+  padding: 0.75rem 0.85rem 1.25rem;
+}
+
+.customer-result-nav {
+  margin-top: 1rem;
+}
+
+.customer-insurance-reference {
+  margin-top: 1.25rem;
+  padding-top: 0.85rem;
+  border-top: 1px dashed #ccc;
+}
+
+.customer-insurance-reference__title {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+}
+
+.customer-insurance-reference__lead {
+  margin: 0 0 0.65rem;
+  font-size: 0.78rem;
+  color: #666;
+}
+
+.insurance-product-card__actual-loss-badge {
+  display: inline-block;
+  margin: 0 0 0.45rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #0d47a1;
+  background: #e3f2fd;
+  border: 1px solid #90caf9;
 }
 
 .customer-view-list {
@@ -954,15 +1105,15 @@ body.customer-view-sheet-open {
 
 .customer-find-results__auto-claim-btn {
   flex-shrink: 0;
-  padding: 0.45rem 0.65rem;
+  padding: 0.55rem 0.85rem;
   border: none;
-  border-radius: 0.45rem;
+  border-radius: 0.5rem;
   background: #fee500;
   color: #191919;
-  font-size: 0.72rem;
+  font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
 }
 
 .customer-find-results__auto-claim-btn[hidden] {
@@ -994,6 +1145,58 @@ body.customer-view-sheet-open {
   border-radius: 0.65rem;
   background: #f8fafc;
   border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.customer-ai-inline-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+}
+
+.customer-ai-inline-card__title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.customer-ai-inline-card__auto-claim {
+  flex-shrink: 0;
+  padding: 0.45rem 0.65rem;
+  border: none;
+  border-radius: 0.45rem;
+  background: #fee500;
+  color: #191919;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.customer-ai-inline-card__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+  margin-bottom: 0.35rem;
+}
+
+.customer-ai-inline-card__stat {
+  padding: 0.55rem 0.6rem;
+  border-radius: 0.5rem;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.customer-ai-inline-card__stat-label {
+  display: block;
+  font-size: 0.68rem;
+  color: #666;
+  margin-bottom: 0.2rem;
+}
+
+.customer-ai-inline-card__stat-value {
+  font-size: 0.95rem;
+  color: #1a1a1a;
 }
 
 .customer-ai-inline-card__metric {

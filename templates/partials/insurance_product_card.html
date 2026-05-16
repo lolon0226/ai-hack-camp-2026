@@ -1,5 +1,8 @@
-<article class="insurance-product-card">
+<article class="insurance-product-card{% if product.show_actual_loss_badge %} insurance-product-card--actual-loss{% endif %}">
   <div class="product-meta">
+    {% if product.show_actual_loss_badge %}
+    <p class="insurance-product-card__actual-loss-badge" aria-label="실손보험">실손보험 확인</p>
+    {% endif %}
     <div class="insurance-product-card__head">
       <h4 class="insurance-product-card__title">{{ product.insurance_name }}</h4>
       <span class="insurance-product-card__status{% if product.contract_status and ('정상' in product.contract_status or '유지' in product.contract_status) %} insurance-product-card__status--active{% endif %}">{{ product.contract_status or '—' }}</span>
@@ -9,7 +12,15 @@
       <div><dt>상품명</dt><dd>{{ product.insurance_name or '—' }}</dd></div>
       <div><dt>상태</dt><dd>{{ product.contract_status or '—' }}</dd></div>
       <div><dt>증권번호</dt><dd>{{ product.policy_number_hid or product.policy_number or '—' }}</dd></div>
+      {% if not customer_view %}
       <div><dt>출처</dt><dd>{{ product.source_type_label or product.source_type or '—' }}</dd></div>
+      {% endif %}
+      {% if customer_view and product.coverage_names_summary %}
+      <div><dt>보명</dt><dd>{{ product.coverage_names_summary }}</dd></div>
+      {% endif %}
+      {% if customer_view %}
+      <div><dt>실손 여부</dt><dd>{% if product.show_actual_loss_badge %}실손·의료비 담보{% else %}—{% endif %}</dd></div>
+      {% endif %}
       <div><dt>보험기간</dt>
         <dd>
           {% if product.start_date and product.start_date|length >= 8 %}
@@ -20,7 +31,9 @@
           {% else %}—{% endif %}
         </dd>
       </div>
+      {% if not customer_view %}
       <div><dt>보험료</dt><dd>{{ product.premium or '—' }}</dd></div>
+      {% endif %}
       <div><dt>보장 수</dt><dd>{{ product.coverage_count or 0 }}건</dd></div>
     </dl>
   </div>
@@ -39,8 +52,10 @@
           <div><dt>보장금액</dt><dd>{{ cov.amount_display or '—' }}</dd></div>
           <div><dt>상태</dt><dd>{{ cov.status or '—' }}</dd></div>
           <div><dt>보장기간</dt><dd>{{ cov.period_display or '—' }}</dd></div>
+          {% if not customer_view %}
           <div><dt>보장코드</dt><dd>{{ cov.code or '—' }}</dd></div>
           <div><dt>피보험자</dt><dd>{{ cov.insured_person or '—' }}</dd></div>
+          {% endif %}
         </dl>
       </article>
       {% endfor %}

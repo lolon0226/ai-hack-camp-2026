@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>진료내역 보기 · 래드리본</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/customer_chat.css" />
+</head>
+<body class="customer-result-page medical-records-full-page">
+  <header class="customer-result-header">
+    <a class="customer-result-header__back" href="{{ back_url }}">조회 결과로</a>
+    <h1 class="customer-result-header__title">진료내역 보기</h1>
+  </header>
+
+  <main class="medical-records-full-main customer-result-main">
+    <section class="medical-records-full-hero">
+      <p class="medical-records-full-hero__lead">
+        저장된 진료내역 · 기본 {{ medical_result_counts.basic }}건 ·
+        세부 {{ medical_result_counts.detail }}건 ·
+        처방 {{ medical_result_counts.prescribe }}건
+      </p>
+      {% if medical_source_note %}
+      <p class="medical-records-full-hero__note">{{ medical_source_note }}</p>
+      {% endif %}
+    </section>
+
+    {% include "partials/medical_records_full_tables.html" %}
+
+    <nav class="customer-result-nav">
+      <a class="customer-find-results__btn customer-find-results__btn--primary" href="{{ back_url }}">조회 결과로 돌아가기</a>
+    </nav>
+  </main>
+
+  <script src="/static/medical_records_full.js"></script>
+</body>
+</html>
