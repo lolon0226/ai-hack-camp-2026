@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>실손보험 청구 패키지 · 운영자</title>
+  <title>병원 수신문서 기준 실손보험 청구 패키지 · 운영자</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="operator-page operator-package-page">
@@ -22,8 +22,8 @@
 
   <main class="operator-main">
     <section class="operator-hero">
-      <h1 class="operator-hero__title">실손보험 청구 패키지</h1>
-      <p class="operator-hero__lead">고객·실손 계약·진료·수신문서를 묶어 보험사 전송 직전 패키지를 검수합니다. (실제 API 미호출)</p>
+      <h1 class="operator-hero__title">병원 수신문서 기준 실손보험 청구 패키지</h1>
+      <p class="operator-hero__lead">병원에서 실시간 수신된 문서와 연결된 진료만 묶어 보험사 전송 직전 패키지를 검수합니다. (실제 API 미호출)</p>
     </section>
 
     {% if show_customer_picker %}
@@ -53,25 +53,74 @@
     {% else %}
     {% set pkg = package %}
     {% set summary = pkg.package_summary %}
+    {% set form = pkg.claim_form %}
 
     <section class="operator-section operator-package-summary" aria-label="상단 요약">
       <h2 class="operator-section__title">상단 요약</h2>
       <dl class="operator-facts-grid">
         <div><dt>실손 상품</dt><dd>{{ summary.actual_loss_product_count }}건</dd></div>
-        <div><dt>청구 대상 진료</dt><dd>{{ summary.claim_target_count }}건</dd></div>
+        <div><dt>문서 연결 청구 진료</dt><dd>{{ summary.claim_target_count }}건</dd></div>
         <div><dt>수신 문서</dt><dd>{{ summary.received_document_count }}건</dd></div>
-        <div><dt>공제 후 추정 합계</dt><dd>{{ summary.total_estimated_display }}</dd></div>
+        <div><dt>연결 진료 본인부담 합계</dt><dd>{{ summary.total_estimated_display }}</dd></div>
       </dl>
     </section>
 
-    <section class="operator-section" aria-labelledby="customer-info-title">
-      <h2 id="customer-info-title" class="operator-section__title">고객 정보</h2>
+    <section class="operator-section" aria-labelledby="claim-form-title">
+      <h2 id="claim-form-title" class="operator-section__title">보험금 청구서 필수 항목</h2>
+      <p class="operator-note">병원 실시간 수신문서·OCR 기준입니다. 미입력 항목은 「추가 입력 필요」로 표시합니다.</p>
+      <h3 class="operator-subsection__title">피보험자</h3>
       <dl class="operator-facts-grid">
-        <div><dt>이름</dt><dd>{{ pkg.customer_profile.name }}</dd></div>
-        <div><dt>고객 ID</dt><dd><code>{{ pkg.customer_profile.customer_id }}</code></dd></div>
-        <div><dt>주민번호</dt><dd>{{ pkg.customer_profile.identity_masked }}</dd></div>
-        <div><dt>전화번호</dt><dd>{{ pkg.customer_profile.phone_masked }}</dd></div>
+        <div><dt>이름</dt><dd>{{ form.insured_person.name }}</dd></div>
+        <div><dt>주민번호</dt><dd>{{ form.insured_person.rrn_masked }}</dd></div>
+        <div><dt>전화번호</dt><dd>{{ form.insured_person.phone_masked }}</dd></div>
+        <div><dt>의료급여</dt><dd>{{ form.insured_person.medical_aid_status }}</dd></div>
       </dl>
+      <h3 class="operator-subsection__title">계약자</h3>
+      <dl class="operator-facts-grid">
+        <div><dt>이름</dt><dd>{{ form.policyholder.name }}{% if form.policyholder.same_as_insured_note %} <span class="operator-pill">{{ form.policyholder.same_as_insured_note }}</span>{% endif %}</dd></div>
+        <div><dt>주민번호</dt><dd>{{ form.policyholder.rrn_masked }}</dd></div>
+      </dl>
+      <h3 class="operator-subsection__title">청구 통지 수령인</h3>
+      <dl class="operator-facts-grid">
+        <div><dt>이름</dt><dd>{{ form.claim_notice_receiver.name }}</dd></div>
+        <div><dt>전화</dt><dd>{{ form.claim_notice_receiver.phone_masked }}</dd></div>
+        <div><dt>통지 방법</dt><dd>{{ form.claim_notice_receiver.notice_method }}</dd></div>
+        <div><dt>이메일</dt><dd>{{ form.claim_notice_receiver.email }}</dd></div>
+        <div><dt>팩스</dt><dd>{{ form.claim_notice_receiver.fax }}</dd></div>
+        <div><dt>주소</dt><dd>{{ form.claim_notice_receiver.address }}</dd></div>
+      </dl>
+      <h3 class="operator-subsection__title">사고·진료</h3>
+      <dl class="operator-facts-grid">
+        <div><dt>청구 유형</dt><dd>{{ form.accident_or_treatment.claim_type }}</dd></div>
+        <div><dt>사고 유형</dt><dd>{{ form.accident_or_treatment.accident_type }}</dd></div>
+        <div><dt>접수 유형</dt><dd>{{ form.accident_or_treatment.receipt_type }}</dd></div>
+        <div><dt>사고·발병일</dt><dd>{{ form.accident_or_treatment.accident_or_onset_date }}</dd></div>
+        <div><dt>병원명</dt><dd>{{ form.accident_or_treatment.hospital_name }}</dd></div>
+        <div><dt>진단명</dt><dd>{{ form.accident_or_treatment.diagnosis }}</dd></div>
+        <div><dt>진료일</dt><dd>{% if form.accident_or_treatment.treatment_dates %}{{ form.accident_or_treatment.treatment_dates | join(', ') }}{% else %}추가 입력 필요{% endif %}</dd></div>
+        <div><dt>교통사고</dt><dd>{{ '예' if form.accident_or_treatment.traffic_accident else '아니오' }}</dd></div>
+      </dl>
+      <h3 class="operator-subsection__title">청구 담보</h3>
+      <dl class="operator-facts-grid">
+        <div><dt>주담보</dt><dd>{{ form.claim_coverage.main_coverage }}</dd></div>
+        <div><dt>세부</dt><dd>{{ form.claim_coverage.detail }}</dd></div>
+        <div><dt>기타 담보</dt><dd>{{ form.claim_coverage.other_coverage_review }}</dd></div>
+      </dl>
+      <h3 class="operator-subsection__title">지급 계좌</h3>
+      <dl class="operator-facts-grid">
+        <div><dt>은행</dt><dd>{{ form.payment_account.bank_name }}</dd></div>
+        <div><dt>계좌번호</dt><dd>{{ form.payment_account.account_number }}</dd></div>
+        <div><dt>예금주</dt><dd>{{ form.payment_account.account_holder }}</dd></div>
+      </dl>
+      <h3 class="operator-subsection__title">동의</h3>
+      <dl class="operator-facts-grid">
+        <div><dt>수집·이용</dt><dd>{{ form.consents.required_collection_use }}</dd></div>
+        <div><dt>제공</dt><dd>{{ form.consents.required_provision }}</dd></div>
+        <div><dt>조회</dt><dd>{{ form.consents.required_inquiry }}</dd></div>
+        <div><dt>민감정보</dt><dd>{{ form.consents.sensitive_info }}</dd></div>
+        <div><dt>고유식별정보</dt><dd>{{ form.consents.unique_identifier }}</dd></div>
+      </dl>
+      <p class="operator-note"><code>고객 ID</code> {{ pkg.customer_profile.customer_id }}</p>
     </section>
 
     <section class="operator-section" aria-labelledby="contracts-title">
@@ -95,7 +144,7 @@
     </section>
 
     <section class="operator-section" aria-labelledby="targets-title">
-      <h2 id="targets-title" class="operator-section__title">실손 청구 대상 진료 정보</h2>
+      <h2 id="targets-title" class="operator-section__title">수신문서 연결 청구 대상 진료</h2>
       {% if pkg.claim_targets %}
       <ul class="operator-target-list">
         {% for t in pkg.claim_targets %}
@@ -103,34 +152,47 @@
           <p class="operator-target-card__date">{{ t.visit_date }} · {{ t.hospital_name }}</p>
           <p class="operator-target-card__sub">{{ t.department }} · {{ t.diagnosis }}</p>
           <p class="operator-target-card__amt">{{ t.estimated_display or t.self_pay_display }} <span class="operator-pill">{{ t.category_label }}</span></p>
+          {% if t.linked_document_title %}
+          <p class="operator-target-card__doc">연결 문서: {{ t.linked_document_title }}</p>
+          {% endif %}
         </li>
         {% endfor %}
       </ul>
       {% else %}
-      <p class="operator-empty">청구 대상 진료가 없습니다. 6단계 AI 분석 또는 진료내역을 확인해 주세요.</p>
+      <p class="operator-empty">수신문서 OCR 완료 후 연결된 진료가 없습니다. OCR·고객매칭이 필요한 문서는 아래 목록을 확인해 주세요.</p>
       {% endif %}
     </section>
 
     <section class="operator-section" aria-labelledby="docs-title">
-      <h2 id="docs-title" class="operator-section__title">병원 수신문서·첨부 후보 서류</h2>
-      {% if pkg.received_documents %}
+      <h2 id="docs-title" class="operator-section__title">병원 수신문서·첨부 서류</h2>
+      {% if pkg.attached_documents %}
       <div class="operator-table-wrap">
         <table class="operator-table">
           <thead>
             <tr>
               <th>문서</th>
               <th>OCR</th>
-              <th>문서종류 후보</th>
-              <th>파일</th>
+              <th>연결 상태</th>
+              <th>매칭 진료일</th>
+              <th>문서종류</th>
             </tr>
           </thead>
           <tbody>
-            {% for doc in pkg.received_documents %}
+            {% for doc in pkg.attached_documents %}
             <tr>
-              <td>{{ doc.document_title }}</td>
+              <td>{{ doc.title }}</td>
               <td><span class="operator-pill operator-pill--{{ doc.ocr_status }}">{{ doc.ocr_status }}</span></td>
-              <td>{{ doc.document_type_candidate }}</td>
-              <td>{% if doc.file_url %}<a href="{{ doc.file_url }}" target="_blank" rel="noopener">보기</a>{% else %}—{% endif %}</td>
+              <td>
+                {% if doc.included_in_claim_targets %}
+                연결됨 ({{ doc.matched_visit_count or 0 }}건)
+                {% elif doc.link_note %}
+                {{ doc.link_note }}
+                {% else %}
+                {{ doc.link_status }}
+                {% endif %}
+              </td>
+              <td>{% if doc.matched_treatment_dates %}{{ doc.matched_treatment_dates | join(', ') }}{% else %}—{% endif %}</td>
+              <td>{{ doc.type_candidate }}</td>
             </tr>
             {% endfor %}
           </tbody>

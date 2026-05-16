@@ -967,6 +967,7 @@ def list_operator_customers(*, limit: int = 100) -> list[dict[str, Any]]:
                 c.customer_key,
                 c.name,
                 c.created_at,
+                c.email,
                 (SELECT COUNT(*) FROM medical_records m WHERE m.customer_key = c.customer_key),
                 (SELECT COUNT(*) FROM insurance_records i WHERE i.customer_key = c.customer_key),
                 (
@@ -991,11 +992,12 @@ def list_operator_customers(*, limit: int = 100) -> list[dict[str, Any]]:
                 "customer_id": str(row[0]),
                 "name": str(row[1] or "").strip() or "—",
                 "created_at": str(row[2] or ""),
-                "medical_record_count": int(row[3] or 0),
-                "insurance_record_count": int(row[4] or 0),
-                "latest_flow_id": str(row[5] or "").strip() or None,
-                "has_medical": int(row[3] or 0) > 0,
-                "has_insurance": int(row[4] or 0) > 0,
+                "email": str(row[3] or "").strip(),
+                "medical_record_count": int(row[4] or 0),
+                "insurance_record_count": int(row[5] or 0),
+                "latest_flow_id": str(row[6] or "").strip() or None,
+                "has_medical": int(row[4] or 0) > 0,
+                "has_insurance": int(row[5] or 0) > 0,
             }
         )
     return items
@@ -1226,6 +1228,16 @@ def seed_operator_received_documents_if_empty() -> int:
         document_type_candidate="진료비영수증",
         ocr_status="completed",
         linked_customer_name=name,
+        metadata_json={
+            "source": "demo_seed",
+            "hospital_name": "시연용 종합병원 A",
+            "ocr": {
+                "patient_name": name,
+                "hospital_name": "시연용 종합병원 A",
+                "visit_dates": ["2025-11-02"],
+                "document_type": "진료비영수증",
+            },
+        },
     )
     return 1
 

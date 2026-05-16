@@ -705,6 +705,13 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   margin: 0.75rem 0 0;
 }
 
+.operator-subsection__title {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--rr-text, #1a1f2e);
+}
+
 .printer-download-actions {
   display: flex;
   flex-wrap: wrap;
