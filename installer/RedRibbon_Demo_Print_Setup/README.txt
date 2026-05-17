@@ -36,7 +36,8 @@ RedRibbon Printer 확인:
 ---------
 C:\RedRibbonDemo\run_redribbon_receiver.ps1
 
-서버: http://127.0.0.1:8000
+서버(본선 권장): http://127.0.0.1:8010
+  ※ print_receiver\config.json 의 server_url 을 설치 PC 포트에 맞게 수정
 API: /api/print-receiver/upload
 
 자세한 설정: SETUP_VIRTUAL_PRINTER.md
