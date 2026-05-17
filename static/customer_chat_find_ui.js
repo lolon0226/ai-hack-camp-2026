@@ -620,6 +620,8 @@
 
     if (autoBtn) autoBtn.hidden = false;
 
+    bindAiAnalysisButtons();
+
   }
 
 
@@ -921,6 +923,10 @@
         if (data && data.ok) {
 
           api.state.findResults = data;
+
+          if (data.flow_id) {
+            api.state.flowId = data.flow_id;
+          }
 
           api.state.finished = true;
 
@@ -1264,7 +1270,7 @@
 
     } else if (kind === "ai") {
 
-      renderInlineAiPanel(data);
+      openAiAnalysisPage();
 
       return;
 
@@ -1374,6 +1380,41 @@
 
     document.body.classList.remove("customer-view-sheet-open");
 
+  }
+
+
+
+  function resolveCustomerFlowId() {
+    var flowId = api.state && api.state.flowId;
+    if (flowId) return String(flowId);
+    try {
+      flowId = new URLSearchParams(window.location.search).get("flow_id") || "";
+    } catch (e) {
+      flowId = "";
+    }
+    if (flowId) return String(flowId);
+    var data = api.state && api.state.findResults;
+    if (data && data.flow_id) return String(data.flow_id);
+    return "";
+  }
+
+  function openAiAnalysisPage() {
+    var flowId = resolveCustomerFlowId();
+    if (flowId) {
+      window.location.assign(
+        "/customer/analysis?flow_id=" + encodeURIComponent(flowId)
+      );
+      return;
+    }
+    var data = api.state.findResults;
+    var url = data && data.ai && data.ai.detail_url;
+    if (url) {
+      window.location.assign(url);
+      return;
+    }
+    window.alert(
+      "AI 분석 화면으로 이동할 수 없습니다. 지난 보험금 찾기를 완료한 뒤 다시 시도해 주세요."
+    );
   }
 
 
@@ -1508,35 +1549,51 @@
 
 
 
-  document.querySelectorAll("[data-action=\"toggle-ai-inline\"]").forEach(function (btn) {
+  function bindAiAnalysisButtons() {
 
-    btn.addEventListener("click", function () {
+    document.querySelectorAll("[data-action=\"open-ai-analysis\"]").forEach(function (btn) {
 
-      var data = api.state.findResults;
+      if (btn.dataset.aiBound === "1") return;
 
-      if (!data) return;
+      btn.dataset.aiBound = "1";
 
-      var panel = document.getElementById("customer-ai-inline");
+      btn.addEventListener("click", function (ev) {
 
-      if (!panel) return;
+        ev.preventDefault();
 
-      if (panel.hidden) {
+        ev.stopPropagation();
 
-        renderInlineAiPanel(data);
+        openAiAnalysisPage();
 
-        btn.textContent = "AI 분석 접기";
-
-      } else {
-
-        panel.hidden = true;
-
-        btn.textContent = "AI 분석 보기";
-
-      }
+      });
 
     });
 
-  });
+  }
+
+  bindAiAnalysisButtons();
+
+  document.addEventListener(
+    "click",
+    function (ev) {
+      var btn = ev.target.closest("[data-action=\"open-ai-analysis\"]");
+      if (!btn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      openAiAnalysisPage();
+    },
+    true
+  );
+
+  if (api.resultsEl) {
+    api.resultsEl.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("[data-action=\"open-ai-analysis\"]");
+      if (!btn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      openAiAnalysisPage();
+    });
+  }
 
 
 
@@ -1563,6 +1620,10 @@
     callAdvance: callAdvance,
 
     fetchResults: fetchResults,
+
+    bindAiAnalysisButtons: bindAiAnalysisButtons,
+
+    openAiAnalysisPage: openAiAnalysisPage,
 
   };
 

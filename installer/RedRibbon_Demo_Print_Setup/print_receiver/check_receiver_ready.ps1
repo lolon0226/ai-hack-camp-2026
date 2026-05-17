@@ -5,10 +5,13 @@ $requiredDirs = @("incoming", "uploading", "uploaded", "failed", "logs")
 $configPath = Join-Path $root "print_receiver\config.json"
 $enginePath = Join-Path $root "print_receiver\receiver_engine.py"
 $runScriptPath = Join-Path $root "run_redribbon_receiver.ps1"
-$defaultServerUrl = "http://127.0.0.1:8000"
+$defaultServerUrl = "http://127.0.0.1:8010"
 $taskName = "RedRibbonDemoReceiver"
 $incomingDir = Join-Path $root "incoming"
 $redRibbonPrinterName = "RedRibbon Printer"
+$redRibbonProfileName = "RedRibbon Auto Save"
+$redRibbonProfileGuid = "RedRibbonAutoSaveGuid"
+$pdfCreatorSettingsReg = "HKCU:\Software\pdfforge\PDFCreator\Settings"
 
 $script:FailCount = 0
 $script:WarnCount = 0
@@ -31,8 +34,51 @@ function Write-Check {
         "WARN" { "Yellow" }
     }
     $msg = "[$Level] $Code"
-    if ($Detail) { $msg += " — $Detail" }
+    if ($Detail) { $msg += " - $Detail" }
     Write-Host $msg -ForegroundColor $color
+}
+
+function Test-IsUsablePathString {
+    param([AllowNull()][string]$Value)
+    if ($null -eq $Value) { return $false }
+    return -not [string]::IsNullOrWhiteSpace([string]$Value)
+}
+
+function Resolve-FullPathSafe {
+    param(
+        [string]$Path,
+        [string]$Label = "path"
+    )
+    $raw = [string]$Path
+    if (-not (Test-IsUsablePathString $raw)) {
+        return @{
+            Ok = $false
+            Normalized = ""
+            Reason = "${Label} is empty"
+        }
+    }
+    $trimmed = $raw.Trim()
+    if ($trimmed -match '[\x00-\x1f\x7f]') {
+        return @{
+            Ok = $false
+            Normalized = ""
+            Reason = "${Label} has invalid control characters"
+        }
+    }
+    try {
+        $normalized = [System.IO.Path]::GetFullPath($trimmed).TrimEnd('\')
+        return @{
+            Ok = $true
+            Normalized = $normalized
+            Reason = ""
+        }
+    } catch {
+        return @{
+            Ok = $false
+            Normalized = ""
+            Reason = "${Label} is not a valid path: $trimmed"
+        }
+    }
 }
 
 function Find-PdfCreatorExe {
@@ -50,24 +96,138 @@ function Find-PdfCreatorExe {
     return $null
 }
 
+function Get-PdfCreatorProfileCount {
+    $profilesRoot = Join-Path $pdfCreatorSettingsReg "ConversionProfiles"
+    if (-not (Test-Path $profilesRoot)) { return 0 }
+    $raw = (Get-ItemProperty -LiteralPath $profilesRoot -Name numClasses -ErrorAction SilentlyContinue).numClasses
+    $n = 0
+    if (-not $raw -or -not [int]::TryParse([string]$raw, [ref]$n)) { return 0 }
+    return $n
+}
+
+function Find-PdfCreatorProfileIndex {
+    param([string]$Name = "", [string]$Guid = "")
+    $profilesRoot = Join-Path $pdfCreatorSettingsReg "ConversionProfiles"
+    $count = Get-PdfCreatorProfileCount
+    for ($i = 0; $i -lt $count; $i++) {
+        $keyPath = Join-Path $profilesRoot ([string]$i)
+        if (-not (Test-Path $keyPath)) { continue }
+        $props = Get-ItemProperty -LiteralPath $keyPath -ErrorAction SilentlyContinue
+        if (-not $props) { continue }
+        if ($Name -and [string]$props.Name -eq $Name) { return $i }
+        if ($Guid -and [string]$props.Guid -eq $Guid) { return $i }
+    }
+    return -1
+}
+
+function Test-PdfCreatorAutoSaveProfile {
+    param([string]$ExpectedIncoming)
+    $result = @{
+        ProfileFound   = $false
+        AutoSaveOn     = $false
+        TargetOk       = $false
+        MappingOk      = $false
+        InteractiveOff = $false
+        OpenViewerOff  = $false
+        TargetWarn              = $false
+        TargetEmptyOrUnreadable = $false
+        Detail                  = ""
+    }
+    if (-not (Test-Path $pdfCreatorSettingsReg)) {
+        $result.Detail = "settings registry missing"
+        return $result
+    }
+    $idx = Find-PdfCreatorProfileIndex -Name $redRibbonProfileName
+    if ($idx -lt 0) { $idx = Find-PdfCreatorProfileIndex -Guid $redRibbonProfileGuid }
+    if ($idx -lt 0) {
+        $result.Detail = "profile not found"
+        return $result
+    }
+    $result.ProfileFound = $true
+    $profileKey = Join-Path (Join-Path $pdfCreatorSettingsReg "ConversionProfiles") ([string]$idx)
+    $props = Get-ItemProperty -LiteralPath $profileKey -ErrorAction SilentlyContinue
+    $autoSave = Get-ItemProperty -LiteralPath (Join-Path $profileKey "AutoSave") -ErrorAction SilentlyContinue
+    $openViewer = Get-ItemProperty -LiteralPath (Join-Path $profileKey "OpenViewer") -ErrorAction SilentlyContinue
+
+    $expectedResolved = Resolve-FullPathSafe -Path $ExpectedIncoming -Label "expected incoming folder"
+    $targetRaw = ""
+    if ($props -and $props.PSObject.Properties.Name -contains "TargetDirectory") {
+        $targetRaw = [string]$props.TargetDirectory
+    }
+
+    if (-not (Test-IsUsablePathString $targetRaw)) {
+        $result.TargetWarn = $true
+        $result.TargetEmptyOrUnreadable = $true
+        $result.TargetOk = $false
+        $targetResolved = @{
+            Ok = $false
+            Normalized = ""
+            Reason = "empty"
+        }
+    } else {
+        $targetResolved = Resolve-FullPathSafe -Path $targetRaw -Label "PDFCreator TargetDirectory"
+    }
+
+    $result.AutoSaveOn = ([string]$autoSave.Enabled -eq "True")
+    $result.OpenViewerOff = ([string]$openViewer.Enabled -ne "True")
+    $result.InteractiveOff = $result.AutoSaveOn
+
+    if ($result.TargetEmptyOrUnreadable) {
+        # GetFullPath skipped; warn only, no exception
+    } elseif (-not $targetResolved.Ok) {
+        $result.TargetWarn = $true
+        $result.TargetEmptyOrUnreadable = $true
+        $result.TargetOk = $false
+    } elseif ($expectedResolved.Ok) {
+        $result.TargetOk = ($targetResolved.Normalized -eq $expectedResolved.Normalized)
+        if (-not $result.TargetOk) {
+            $result.TargetWarn = $true
+        }
+    } else {
+        $result.TargetWarn = $true
+        $result.TargetOk = $false
+    }
+
+    $mapRoot = Join-Path $pdfCreatorSettingsReg "ApplicationSettings\PrinterMappings"
+    $mc = 0
+    if (Test-Path $mapRoot) {
+        $raw = (Get-ItemProperty -LiteralPath $mapRoot -Name numClasses -ErrorAction SilentlyContinue).numClasses
+        if ($raw) { [void][int]::TryParse([string]$raw, [ref]$mc) }
+    }
+    for ($i = 0; $i -lt $mc; $i++) {
+        $entry = Get-ItemProperty -LiteralPath (Join-Path $mapRoot ([string]$i)) -ErrorAction SilentlyContinue
+        if ([string]$entry.PrinterName -ne $redRibbonPrinterName) { continue }
+        $guidOk = ([string]$entry.ProfileGuid -eq $redRibbonProfileGuid)
+        $nameOk = (-not $entry.ProfileName) -or ([string]$entry.ProfileName -eq $redRibbonProfileName)
+        if ($guidOk -and $nameOk) {
+            $result.MappingOk = $true
+            break
+        }
+    }
+
+    $targetDisplay = if ($targetResolved.Ok) { $targetResolved.Normalized } else { "(invalid or empty)" }
+    $result.Detail = "idx=$idx AutoSave=$($autoSave.Enabled) Target=$targetDisplay Mapping=$($result.MappingOk)"
+    if ($targetResolved.Reason) {
+        $result.Detail += " TargetNote=$($targetResolved.Reason)"
+    }
+    return $result
+}
+
 Write-Host "=== RedRibbon Demo Print Receiver check ===" -ForegroundColor Cyan
 Write-Host ""
 
-# 1) C:\RedRibbonDemo
 if (Test-Path $root) {
     Write-Check -Level OK -Code "install_root" -Detail $root
 } else {
     Write-Check -Level FAIL -Code "install_root_missing" -Detail $root
 }
 
-# 2) Receiver Engine
 if (Test-Path $enginePath) {
     Write-Check -Level OK -Code "receiver_engine" -Detail $enginePath
 } else {
     Write-Check -Level FAIL -Code "receiver_engine_missing" -Detail $enginePath
 }
 
-# 3) Working directories
 foreach ($sub in $requiredDirs) {
     $dir = Join-Path $root $sub
     if (Test-Path $dir) {
@@ -77,7 +237,6 @@ foreach ($sub in $requiredDirs) {
     }
 }
 
-# 4) config.json + server_url
 $cfgServerUrl = ""
 if (Test-Path $configPath) {
     Write-Check -Level OK -Code "config_json" -Detail $configPath
@@ -98,7 +257,6 @@ if (Test-Path $configPath) {
     Write-Check -Level FAIL -Code "config_json_missing" -Detail $configPath
 }
 
-# 5) run script
 if (Test-Path $runScriptPath) {
     Write-Check -Level OK -Code "run_script" -Detail $runScriptPath
 } else {
@@ -112,7 +270,6 @@ $script:ReceiverCoreOk = (
     (Test-Path $runScriptPath)
 )
 
-# 6) Scheduled task RedRibbonDemoReceiver
 $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($task) {
     Write-Check -Level OK -Code "scheduled_task" -Detail $taskName
@@ -120,7 +277,6 @@ if ($task) {
     Write-Check -Level WARN -Code "scheduled_task_missing" -Detail "run install_redribbon_demo.ps1 or register_receiver_task.ps1"
 }
 
-# 7) PDFCreator base printer / application
 $pdfCreatorPrinter = Get-Printer -Name "PDFCreator" -ErrorAction SilentlyContinue
 $pdfExe = Find-PdfCreatorExe
 if ($pdfCreatorPrinter) {
@@ -128,18 +284,44 @@ if ($pdfCreatorPrinter) {
 } elseif ($pdfExe) {
     Write-Check -Level WARN -Code "pdfcreator_printer_missing" -Detail "PDFCreator.exe found but PDFCreator printer not listed"
 } else {
-    Write-Check -Level WARN -Code "pdfcreator_not_found" -Detail "PDFCreator가 설치되어 있지 않아 RedRibbon Printer 자동 생성은 건너뜁니다."
+    Write-Check -Level WARN -Code "pdfcreator_not_found" -Detail "PDFCreator not installed"
 }
 
-# 8) RedRibbon Printer (OK/FAIL)
 $redRibbonPrinter = Get-Printer -Name $redRibbonPrinterName -ErrorAction SilentlyContinue
 if ($redRibbonPrinter) {
     Write-Check -Level OK -Code "redribbon_printer" -Detail "Name=$($redRibbonPrinter.Name) DriverName=$($redRibbonPrinter.DriverName) PortName=$($redRibbonPrinter.PortName)"
 } else {
-    Write-Check -Level FAIL -Code "redribbon_printer_missing" -Detail "Get-Printer -Name '$redRibbonPrinterName' — run install_redribbon_demo.ps1 or EXE setup"
+    Write-Check -Level FAIL -Code "redribbon_printer_missing" -Detail "Get-Printer -Name '$redRibbonPrinterName'"
 }
 
-# 9) incoming writable
+$profileMappingWarn = "RedRibbon Printer exists, but PDFCreator auto-save profile mapping needs verification."
+$autoSaveCheck = Test-PdfCreatorAutoSaveProfile -ExpectedIncoming $incomingDir
+if ($redRibbonPrinter) {
+    if ($autoSaveCheck.TargetEmptyOrUnreadable) {
+        Write-Check -Level WARN -Code "pdfcreator_autosave_target" -Detail "PDFCreator auto-save target is empty or unreadable"
+    } elseif ($autoSaveCheck.TargetWarn) {
+        Write-Check -Level WARN -Code "pdfcreator_autosave_target" -Detail "PDFCreator auto-save target path does not match incoming folder"
+    }
+    if ($autoSaveCheck.ProfileFound -and $autoSaveCheck.AutoSaveOn -and $autoSaveCheck.TargetOk -and $autoSaveCheck.MappingOk) {
+        Write-Check -Level OK -Code "pdfcreator_autosave_profile" -Detail "PDFCreator auto-save profile configured"
+    } elseif ($autoSaveCheck.ProfileFound) {
+        if (-not $autoSaveCheck.TargetEmptyOrUnreadable) {
+            Write-Check -Level WARN -Code "pdfcreator_autosave_partial" -Detail $autoSaveCheck.Detail
+        }
+        if (-not $autoSaveCheck.MappingOk) {
+            Write-Check -Level WARN -Code "pdfcreator_profile_link" -Detail $profileMappingWarn
+        }
+    } else {
+        Write-Check -Level WARN -Code "pdfcreator_autosave_profile_missing" -Detail "RedRibbon Auto Save profile not found"
+        Write-Check -Level WARN -Code "pdfcreator_profile_link" -Detail $profileMappingWarn
+    }
+    if ($autoSaveCheck.OpenViewerOff -and $autoSaveCheck.AutoSaveOn) {
+        Write-Check -Level OK -Code "pdfcreator_interactive_off" -Detail "AutoSave ON / OpenViewer OFF"
+    } elseif ($autoSaveCheck.ProfileFound) {
+        Write-Check -Level WARN -Code "pdfcreator_interactive_uncertain" -Detail "OpenViewer or AutoSave settings need review"
+    }
+}
+
 if (Test-Path $incomingDir) {
     $probe = Join-Path $incomingDir ".write_test_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
     try {
@@ -153,7 +335,6 @@ if (Test-Path $incomingDir) {
     Write-Check -Level FAIL -Code "incoming_missing" -Detail $incomingDir
 }
 
-# 10) Server reachability (optional for demo)
 $checkUrl = if ($cfgServerUrl) { $cfgServerUrl.TrimEnd('/') } else { $defaultServerUrl }
 try {
     $resp = Invoke-WebRequest -Uri $checkUrl -UseBasicParsing -TimeoutSec 5
@@ -168,11 +349,13 @@ Write-Host "FAIL: $script:FailCount  WARN: $script:WarnCount" -ForegroundColor $
 
 if (-not $redRibbonPrinter -and $script:ReceiverCoreOk) {
     Write-Host ""
-    Write-Host "[FAIL] RedRibbon Printer가 없습니다. EXE 설치를 다시 실행하거나 PDFCreator 기준 프린터를 확인하세요." -ForegroundColor Red
+    Write-Host "[FAIL] RedRibbon Printer is missing. Re-run the installer or check the PDFCreator base printer." -ForegroundColor Red
 }
 
 Write-Host ""
-Write-Host "PDFCreator auto-save folder: C:\RedRibbonDemo\incoming" -ForegroundColor Cyan
+Write-Host "PDFCreator auto-save folder: $incomingDir" -ForegroundColor Cyan
+Write-Host "Scheduled task: $taskName (runs Receiver at logon when registered)" -ForegroundColor Cyan
+Write-Host "Manual run (demo): $runScriptPath" -ForegroundColor Cyan
 Write-Host "=== check complete ===" -ForegroundColor Cyan
 
 if ($script:FailCount -gt 0) { exit 1 }

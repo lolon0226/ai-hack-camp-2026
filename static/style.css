@@ -1954,11 +1954,78 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   margin: 1rem 0;
 }
 
+.hospital-hira-page--kakao-demo .hospital-hira-main {
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+.hospital-insurance-page--kakao-demo .hospital-insurance-main {
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+.hospital-insurance-page--kakao-demo .hospital-insurance-hero {
+  text-align: center;
+  margin-bottom: 0.25rem;
+}
+
+.hospital-insurance-state__lead--success {
+  text-align: center;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #0d7a4a;
+}
+
+.hospital-insurance-stored-hint {
+  max-width: 36rem;
+  margin: 0 auto 1rem;
+  text-align: center;
+}
+
+.hospital-credit4u-dev-details,
+.hospital-insurance-dev-details {
+  margin-top: 1.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px dashed #ccc;
+  border-radius: 0.5rem;
+  background: #fafafa;
+}
+
+.hospital-credit4u-dev-details__summary,
+.hospital-insurance-dev-details__summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #555;
+}
+
+.hospital-insurance-summary-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.65rem;
+}
+
+.hospital-hira-page--kakao-demo .hospital-hira-hero {
+  text-align: center;
+  margin-bottom: 0.25rem;
+}
+
+.hospital-kakao-prepared--hero {
+  margin: 1.5rem auto 2rem;
+  max-width: 36rem;
+  text-align: center;
+}
+
 .hospital-kakao-prepared__card {
   padding: 1rem 1.1rem;
   background: #fff9e6;
   border: 1px solid #f0d878;
   border-radius: 0.5rem;
+}
+
+.hospital-kakao-prepared--hero .hospital-kakao-prepared__card {
+  padding: 2rem 1.5rem 1.75rem;
+  border-radius: 0.75rem;
+  box-shadow: 0 8px 28px rgba(196, 145, 0, 0.12);
 }
 
 .hospital-kakao-prepared__message {
@@ -1968,9 +2035,83 @@ a.hospital-step-bar__item:not(.hospital-step-bar__item--active):hover {
   color: #3d3d3d;
 }
 
+.hospital-kakao-prepared__message--lead {
+  margin-bottom: 0.5rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.hospital-kakao-prepared__form {
+  margin-top: 1.25rem;
+}
+
 .hospital-kakao-prepared__btn {
   width: 100%;
   max-width: 16rem;
+}
+
+.hospital-kakao-prepared__btn--hero,
+.hospital-hira-state__btn--hero {
+  display: block;
+  width: 100%;
+  max-width: 22rem;
+  min-height: 3.25rem;
+  margin: 0 auto;
+  padding: 0.85rem 1.5rem;
+  font-size: 1.08rem;
+  font-weight: 700;
+}
+
+.hospital-hira-state--demo {
+  margin-top: 0.5rem;
+}
+
+.hospital-hira-state__next--center {
+  display: flex;
+  justify-content: center;
+  margin: 1.25rem 0;
+}
+
+.hospital-hira-state__form-inline {
+  margin: 0;
+  width: 100%;
+  max-width: 22rem;
+}
+
+.hospital-hira-state__lead--success {
+  text-align: center;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #0d7a4a;
+}
+
+.hospital-hira-complete-card {
+  max-width: 40rem;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.hospital-hira-complete-card .hospital-hira-state__desc {
+  text-align: center;
+}
+
+.hospital-hira-dev-details {
+  margin-top: 2rem;
+  padding: 0.75rem 1rem;
+  border: 1px dashed #ccc;
+  border-radius: 0.5rem;
+  background: #fafafa;
+}
+
+.hospital-hira-dev-details__summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #555;
+}
+
+.hospital-hira-dev-details__body {
+  margin-top: 0.75rem;
 }
 
 .hospital-credit4u-credentials__error {

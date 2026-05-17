@@ -1,5 +1,5 @@
 {
-  "server_url": "http://127.0.0.1:8000",
+  "server_url": "http://127.0.0.1:8010",
   "upload_endpoint": "/api/print-receiver/upload",
   "watch_dir": "C:\\RedRibbonDemo\\incoming",
   "uploading_dir": "C:\\RedRibbonDemo\\uploading",

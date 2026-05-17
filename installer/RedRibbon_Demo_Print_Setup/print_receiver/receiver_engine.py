@@ -19,7 +19,7 @@ import requests
 _DEMO_ROOT = r"C:\RedRibbonDemo"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "server_url": "http://127.0.0.1:8000",
+    "server_url": "http://127.0.0.1:8010",
     "upload_endpoint": "/api/print-receiver/upload",
     "watch_dir": rf"{_DEMO_ROOT}\incoming",
     "uploading_dir": rf"{_DEMO_ROOT}\uploading",

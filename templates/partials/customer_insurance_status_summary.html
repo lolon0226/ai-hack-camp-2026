@@ -1,0 +1,42 @@
+{% if insurance_status_summary %}
+<section class="customer-insurance-summary" aria-label="보험가입이력 요약">
+  <h2 class="customer-insurance-summary__title">계약 상태 요약</h2>
+  <div class="customer-insurance-summary__grid">
+    <article class="customer-insurance-summary__card">
+      <span class="customer-insurance-summary__label">전체</span>
+      <strong class="customer-insurance-summary__value">{{ insurance_status_summary.total }}건</strong>
+    </article>
+    <article class="customer-insurance-summary__card">
+      <span class="customer-insurance-summary__label">정상</span>
+      <strong class="customer-insurance-summary__value">{{ insurance_status_summary.normal }}건</strong>
+    </article>
+    <article class="customer-insurance-summary__card">
+      <span class="customer-insurance-summary__label">유지/유효</span>
+      <strong class="customer-insurance-summary__value">{{ insurance_status_summary.active_valid }}건</strong>
+    </article>
+    <article class="customer-insurance-summary__card">
+      <span class="customer-insurance-summary__label">실효</span>
+      <strong class="customer-insurance-summary__value">{{ insurance_status_summary.lapsed }}건</strong>
+    </article>
+    <article class="customer-insurance-summary__card">
+      <span class="customer-insurance-summary__label">만기</span>
+      <strong class="customer-insurance-summary__value">{{ insurance_status_summary.matured }}건</strong>
+    </article>
+    <article class="customer-insurance-summary__card">
+      <span class="customer-insurance-summary__label">해지</span>
+      <strong class="customer-insurance-summary__value">{{ insurance_status_summary.cancelled }}건</strong>
+    </article>
+    <article class="customer-insurance-summary__card">
+      <span class="customer-insurance-summary__label">기타</span>
+      <strong class="customer-insurance-summary__value">{{ insurance_status_summary.other }}건</strong>
+    </article>
+    <article class="customer-insurance-summary__card customer-insurance-summary__card--accent">
+      <span class="customer-insurance-summary__label">실손보험 확인</span>
+      <strong class="customer-insurance-summary__value">{{ insurance_status_summary.actual_loss }}건</strong>
+    </article>
+  </div>
+  <p class="customer-insurance-summary__note">
+    해지·만기·실효 계약도 아래 목록에서 확인할 수 있습니다. 본 화면은 조회 결과 안내이며 보험금 지급을 확정하지 않습니다.
+  </p>
+</section>
+{% endif %}

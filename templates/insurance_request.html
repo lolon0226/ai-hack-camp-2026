@@ -6,7 +6,7 @@
   <title>보험가입이력 가져오기 · 래드리본 병원용</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body class="hospital-insurance-page">
+<body class="hospital-insurance-page{% if hospital_kakao_pending == 'insurance' %} hospital-insurance-page--kakao-demo{% endif %}">
   <header class="hospital-start-header">
     <div class="hospital-start-header__inner">
       <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
@@ -28,12 +28,28 @@
 
     <section class="hospital-insurance-hero" aria-labelledby="hospital-insurance-title">
       <h1 id="hospital-insurance-title" class="hospital-insurance-title">보험가입이력 가져오기</h1>
+      {% if hospital_kakao_pending != 'insurance' %}
       <p class="hospital-insurance-sub">
         고객의 본인확인과 동의를 바탕으로 가입 중인 보험계약 정보를 조회하고,<br />
         피보험자 기준으로 청구 검토 대상 보험을 정리합니다.
       </p>
+      {% endif %}
     </section>
 
+    {% if hospital_kakao_pending == 'insurance' %}
+    {% include "partials/hospital_kakao_prepared_panel.html" %}
+    {% if has_stored_insurance_hint %}
+    <p class="hospital-form-error hospital-form-error--info hospital-insurance-stored-hint" role="status">
+      이미 조회된 보험가입이력이 있습니다. 인증 완료 후 결과를 확인할 수 있습니다.
+    </p>
+    {% endif %}
+    {% endif %}
+
+    {% if show_credit4u_credentials_card %}
+    {% include "partials/credit4u_credentials_card.html" %}
+    {% endif %}
+
+    {% if hospital_kakao_pending != 'insurance' %}
     <section class="hospital-hira-summary hospital-insurance-customer" aria-label="고객 정보 요약">
       <h2 class="hospital-hira-summary__title">고객 정보</h2>
       <dl class="hospital-hira-summary__dl">
@@ -60,10 +76,6 @@
       </dl>
     </section>
 
-    {% if show_credit4u_credentials_card %}
-    {% include "partials/credit4u_credentials_card.html" %}
-    {% endif %}
-
     <section class="hospital-insurance-notice" aria-label="조회 안내">
       <h2 class="hospital-insurance-notice__title">조회 안내</h2>
       <div class="hospital-insurance-notice__body">
@@ -73,8 +85,9 @@
         <p>본 화면은 실제 API 연결 전, 상용 업무 흐름을 먼저 고정한 구조입니다.</p>
       </div>
     </section>
+    {% endif %}
 
-    {% if insurance_source_label %}
+    {% if insurance_source_label and show_insurance_results %}
     <p class="hospital-form-error hospital-form-error--info" role="status">{{ insurance_source_label }}</p>
     {% endif %}
 
@@ -95,8 +108,10 @@
     {% endif %}
 
     <section class="hospital-insurance-state" aria-live="polite">
-      {% include "partials/hospital_kakao_prepared_panel.html" %}
-      {% if insurance_status == "pending" and not hide_insurance_codf_start %}
+      {% if hospital_kakao_pending == 'insurance' %}
+      {# 카카오 인증 안내·인증 완료 버튼은 상단 패널에 표시 #}
+
+      {% elif insurance_status == "pending" and not hide_insurance_codf_start %}
       <p class="hospital-insurance-state__lead">보험가입이력 조회가 필요합니다.</p>
       <p class="hospital-insurance-state__hint">처음 조회하는 고객 또는 회원가입이 필요한 고객은 자동 생성 계정으로 진행합니다.</p>
       <form class="hospital-insurance-state__form" method="post" action="/hospital/insurance-request/start?flow_id={{ flow_id }}" data-loading-message="보험가입이력을 불러오는 중입니다. 잠시만 기다려 주세요.">
@@ -395,32 +410,47 @@
       </form>
       {% endif %}
 
-      {% elif insurance_status == "completed" %}
+      {% elif show_insurance_results and insurance_status == "completed" %}
       <div class="hospital-insurance-completed">
-      <p class="hospital-insurance-state__lead">{% if insurance_using_prepared_demo %}{{ insurance_message or "보험가입이력 조회 완료" }}{% else %}보험가입이력 수신 완료{% endif %}</p>
+      <p class="hospital-insurance-state__lead hospital-insurance-state__lead--success">보험가입이력 조회가 완료되었습니다.</p>
       {% if insurance_using_saved_import %}
       <p class="hospital-insurance-state__desc hospital-insurance-state__desc--muted">저장된 보험가입이력 기준입니다.</p>
       {% endif %}
       <div class="hospital-insurance-summary-panel" aria-label="보험가입이력 요약">
         <ul class="hospital-insurance-summary-counts">
           <li class="hospital-insurance-summary-counts__item">
-            <span class="hospital-insurance-summary-counts__label">피보험자 기준 상품</span>
-            <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.total }}</strong>
+            <span class="hospital-insurance-summary-counts__label">전체</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_status_counts.total or insurance_summary.total }}</strong>
             <span class="hospital-insurance-summary-counts__unit">건</span>
           </li>
           <li class="hospital-insurance-summary-counts__item">
-            <span class="hospital-insurance-summary-counts__label">정상·유지 계약</span>
-            <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.insured_valid }}</strong>
+            <span class="hospital-insurance-summary-counts__label">정상</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_status_counts.normal or 0 }}</strong>
             <span class="hospital-insurance-summary-counts__unit">건</span>
           </li>
           <li class="hospital-insurance-summary-counts__item">
-            <span class="hospital-insurance-summary-counts__label">보험회사</span>
-            <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.company_count }}</strong>
-            <span class="hospital-insurance-summary-counts__unit">개</span>
+            <span class="hospital-insurance-summary-counts__label">유효</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_status_counts.active_valid or 0 }}</strong>
+            <span class="hospital-insurance-summary-counts__unit">건</span>
           </li>
           <li class="hospital-insurance-summary-counts__item">
-            <span class="hospital-insurance-summary-counts__label">총 보장</span>
-            <strong class="hospital-insurance-summary-counts__value">{{ insurance_summary.coverage_count or 0 }}</strong>
+            <span class="hospital-insurance-summary-counts__label">실손보험 확인</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_status_counts.actual_loss or 0 }}</strong>
+            <span class="hospital-insurance-summary-counts__unit">건</span>
+          </li>
+          <li class="hospital-insurance-summary-counts__item">
+            <span class="hospital-insurance-summary-counts__label">실효</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_status_counts.lapsed or 0 }}</strong>
+            <span class="hospital-insurance-summary-counts__unit">건</span>
+          </li>
+          <li class="hospital-insurance-summary-counts__item">
+            <span class="hospital-insurance-summary-counts__label">만기</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_status_counts.matured or 0 }}</strong>
+            <span class="hospital-insurance-summary-counts__unit">건</span>
+          </li>
+          <li class="hospital-insurance-summary-counts__item">
+            <span class="hospital-insurance-summary-counts__label">해지</span>
+            <strong class="hospital-insurance-summary-counts__value">{{ insurance_status_counts.cancelled or 0 }}</strong>
             <span class="hospital-insurance-summary-counts__unit">건</span>
           </li>
         </ul>
@@ -456,6 +486,8 @@
       {% endif %}
 
       {% if debug_panel and insurance_summary_debug %}
+      <details class="hospital-insurance-dev-details">
+        <summary class="hospital-insurance-dev-details__summary">개발자 진단 정보</summary>
       <aside class="hospital-insurance-debug" aria-label="보험 요약 디버그">
         <h3 class="hospital-insurance-debug__title">보험 필터 DEBUG</h3>
         <dl class="hospital-insurance-debug__dl">
@@ -470,6 +502,7 @@
           {% endif %}
         </dl>
       </aside>
+      </details>
       {% endif %}
       </div>
 
@@ -508,6 +541,8 @@
     </section>
 
     {% if debug_panel and credit4u_debug %}
+    <details class="hospital-insurance-dev-details hospital-insurance-dev-details--page">
+      <summary class="hospital-insurance-dev-details__summary">개발자 진단 정보</summary>
     <aside class="hospital-insurance-debug hospital-insurance-debug--page" aria-label="신용정보원 CODEF 디버그">
       <h3 class="hospital-insurance-debug__title">CODEF 디버그</h3>
       <dl class="hospital-insurance-debug__dl">
@@ -843,6 +878,7 @@
         {% endif %}
       </dl>
     </aside>
+    </details>
     {% endif %}
   </main>
 

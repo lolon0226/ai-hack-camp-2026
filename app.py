@@ -512,7 +512,7 @@ def _complete_hospital_medical_prepared_load(flow_id: str, entry: dict[str, Any]
     if _apply_saved_medical_records(flow_id, entry):
         entry["medical_status"] = "completed"
         entry["hira_stage"] = "completed"
-        entry["medical_message"] = "진료내역을 가져왔습니다."
+        entry["medical_message"] = "진료내역 조회가 완료되었습니다."
         _persist_medical_records_to_sqlite(flow_id, entry)
         return True
     if _restore_prepared_medical_for_flow(flow_id, entry):
@@ -521,6 +521,45 @@ def _complete_hospital_medical_prepared_load(flow_id: str, entry: dict[str, Any]
     entry["medical_status"] = "failed"
     entry["medical_message"] = "진료내역을 가져오지 못했습니다. 다시 시도해 주세요."
     return False
+
+
+def _insurance_demo_kakao_deferred(entry: dict[str, Any]) -> bool:
+    """본선 시연: 카카오 인증 완료 전에는 DB 저장본을 화면에 자동 반영하지 않음."""
+    return bool(
+        _use_prepared_demo_insurance()
+        and not entry.get("insurance_kakao_demo_confirmed")
+    )
+
+
+def _prepare_hospital_insurance_demo_kakao_entry(
+    entry: dict[str, Any],
+    customer: dict[str, Any],
+) -> None:
+    """4단계 시연: 인증 안내·버튼만 먼저 보이도록 완료 상태를 잠시 숨김(CODEF 미호출)."""
+    if not _insurance_demo_kakao_deferred(entry):
+        return
+    for key in (
+        "insured_summary",
+        "insurance_records",
+        "insurance_company_groups",
+        "insurance_summary",
+        "insurance_summary_debug",
+        "insurance_result",
+        "insurance_result_raw",
+    ):
+        entry.pop(key, None)
+    entry.pop("insurance_source", None)
+    entry["insurance_status"] = "pending"
+    entry["insurance_stage"] = "ready"
+    entry["insurance_message"] = (
+        "보험가입이력 조회를 위해 카카오 인증을 진행합니다."
+    )
+    entry["has_stored_insurance_hint"] = _customer_has_stored_insurance_records(
+        customer
+    )
+    _provision_finals_credit4u_credentials(entry)
+    if not entry.get("hospital_kakao_pending"):
+        _begin_hospital_insurance_kakao_waiting(entry)
 
 
 def _complete_hospital_insurance_prepared_load(flow_id: str, entry: dict[str, Any]) -> bool:
@@ -534,7 +573,8 @@ def _complete_hospital_insurance_prepared_load(flow_id: str, entry: dict[str, An
         entry["insurance_source"] = INSURANCE_FLOW_SOURCE_PREPARED_DEMO
         entry["insurance_status"] = "completed"
         entry["insurance_stage"] = "completed"
-        entry["insurance_message"] = "보험가입이력을 가져왔습니다."
+        entry["insurance_kakao_demo_confirmed"] = True
+        entry["insurance_message"] = "보험가입이력 조회가 완료되었습니다."
         _apply_codef_limit_debug(entry, prepared_insurance_loaded=True)
         return True
     except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
@@ -3318,6 +3358,8 @@ def _hospital_lookup_form_error(name: str, identity: str) -> str | None:
 
 def _restore_saved_insurance_records_if_needed(entry: dict[str, Any]) -> bool:
     """SQLite에 저장된 보험 원부를 FLOW_STORE에 복원(CODEF 미호출)."""
+    if _insurance_demo_kakao_deferred(entry):
+        return False
     if entry.get("insurance_source") == "saved_imported" and entry.get("insurance_records"):
         return True
     if entry.get("insurance_status") == "completed" and entry.get("insurance_records"):
@@ -3411,7 +3453,12 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
                         inner.get("coverage_count") or summary.get("coverage_count") or 0
                     ),
                 }
-        company_groups = insured_summary.get("company_groups") or []
+        company_groups = _sort_hospital_insurance_company_groups(
+            insured_summary.get("company_groups") or []
+        )
+        if company_groups:
+            insured_summary = {**insured_summary, "company_groups": company_groups}
+            entry["insured_summary"] = insured_summary
     user_message = entry.get("insurance_message") or entry.get("insurance_error")
     credit4u_debug: dict[str, Any] | None = None
     insurance_stage = str(entry.get("insurance_stage") or "")
@@ -3628,6 +3675,16 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
         )
     )
     creds_view = _credit4u_credentials_view_context(entry)
+    if show_credentials_card and _use_prepared_demo_insurance():
+        creds_view = {
+            **creds_view,
+            "show_credit4u_credentials_card": True,
+            "credit4u_credentials_readonly": True,
+            "credit4u_hide_proceed_button": True,
+            "credit4u_auto_generated_notice": (
+                "자동 생성된 신용정보원 조회용 계정입니다."
+            ),
+        }
     if not show_credentials_card:
         creds_view = {
             **creds_view,
@@ -3686,6 +3743,18 @@ def _insurance_request_context(entry: dict[str, Any], fid: str) -> dict[str, Any
         )
         or str(entry.get("credit4u_register_extra_message") or "")
         or str(entry.get("credit4u_register_error_message") or ""),
+        "has_stored_insurance_hint": bool(entry.get("has_stored_insurance_hint")),
+        "show_insurance_results": (
+            status == "completed"
+            and str(entry.get("insurance_stage") or "") == "completed"
+            and not entry.get("hospital_kakao_pending")
+        ),
+        "insurance_status_counts": (
+            _customer_insurance_status_summary_counts(entry)
+            if status == "completed"
+            and not entry.get("hospital_kakao_pending")
+            else {}
+        ),
     }
 
 
@@ -3885,6 +3954,17 @@ def _customer_insurance_is_uncertain(product: dict[str, Any]) -> bool:
     return False
 
 
+_ACTUAL_LOSS_NAME_TOKENS = (
+    "실손",
+    "실손의료비",
+    "의료실비",
+    "실비",
+    "상해의료비",
+    "질병의료비",
+    "의료비",
+)
+
+
 def _customer_insurance_is_actual_loss(product: dict[str, Any]) -> bool:
     name = str(
         product.get("insurance_name") or product.get("product_name") or ""
@@ -3892,33 +3972,118 @@ def _customer_insurance_is_actual_loss(product: dict[str, Any]) -> bool:
     category = str(product.get("category") or "").strip()
     if category == "실손":
         return True
-    for token in ("실손", "실비", "의료비"):
-        if token in name:
-            return True
+    if any(token in name for token in _ACTUAL_LOSS_NAME_TOKENS):
+        return True
     coverages = product.get("coverages")
     if isinstance(coverages, list):
         for cov in coverages:
             if not isinstance(cov, dict):
                 continue
             cov_name = str(cov.get("coverage_name") or "")
-            if any(token in cov_name for token in ("실손", "실비", "의료비")):
+            if any(token in cov_name for token in _ACTUAL_LOSS_NAME_TOKENS):
                 return True
     return False
 
 
-def _customer_insurance_status_tier(product: dict[str, Any]) -> int:
-    status = str(
+def _customer_insurance_contract_status_text(product: dict[str, Any]) -> str:
+    return str(
         product.get("contract_status") or product.get("status") or ""
     ).strip()
-    if any(token in status for token in ("정상", "유지")):
+
+
+def _customer_insurance_status_bucket(status: str) -> str:
+    """계약상태 문자열 → 요약 카운트 버킷."""
+    s = (status or "").strip()
+    if not s:
+        return "other"
+    if "정상" in s:
+        return "normal"
+    if any(token in s for token in ("유지", "유효", "계약중")):
+        return "active_valid"
+    if any(token in s for token in ("실효", "소멸")):
+        return "lapsed"
+    if "만기" in s:
+        return "matured"
+    if any(token in s for token in ("해지", "해약")):
+        return "cancelled"
+    return "other"
+
+
+def _customer_insurance_status_tier(product: dict[str, Any]) -> int:
+    """목록 정렬: 1)정상·유효+실손 2)정상·유효 일반 3)건강 4)실효 5)만기 6)해지 7)기타."""
+    bucket = _customer_insurance_status_bucket(
+        _customer_insurance_contract_status_text(product)
+    )
+    if bucket in ("normal", "active_valid"):
         return 0
-    if "해지" in status:
+    if bucket == "lapsed":
+        return 4
+    if bucket == "matured":
         return 5
-    if "만기" in status:
+    if bucket == "cancelled":
         return 6
-    if any(token in status for token in ("실효", "소멸")):
-        return 7
+    return 7
+
+
+def _hospital_insurance_status_tier(product: dict[str, Any]) -> int:
+    """병원 4단계: 정상·유효 → 기타 → 실효 → 만기 → 해지."""
+    bucket = _customer_insurance_status_bucket(
+        _customer_insurance_contract_status_text(product)
+    )
+    if bucket in ("normal", "active_valid"):
+        return 0
+    if bucket == "lapsed":
+        return 4
+    if bucket == "matured":
+        return 5
+    if bucket == "cancelled":
+        return 6
     return 3
+
+
+def _hospital_insurance_sort_key(product: dict[str, Any]) -> tuple[Any, ...]:
+    company = str(
+        product.get("company_name") or product.get("company") or ""
+    ).strip()
+    name = str(
+        product.get("insurance_name") or product.get("product_name") or ""
+    ).strip()
+    missing_names = 1 if (not company or company == "—") and (
+        not name or name == "—"
+    ) else 0
+    tier = _hospital_insurance_status_tier(product)
+    active_rank = _customer_insurance_active_sort_rank(product) if tier == 0 else 9
+    return (tier, active_rank, missing_names, name, company)
+
+
+def _sort_hospital_insurance_company_groups(
+    company_groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    sorted_groups: list[dict[str, Any]] = []
+    for group in company_groups:
+        if not isinstance(group, dict):
+            continue
+        row = dict(group)
+        products = row.get("products") or []
+        if isinstance(products, list):
+            primary = [p for p in products if isinstance(p, dict)]
+            primary.sort(key=_hospital_insurance_sort_key)
+            row["products"] = primary
+            row["contract_count"] = len(primary)
+        sorted_groups.append(row)
+    return sorted_groups
+
+
+def _customer_insurance_active_sort_rank(product: dict[str, Any]) -> int:
+    """유효 계약 내: 실손 → 건강보험 → 일반."""
+    if _customer_insurance_is_actual_loss(product):
+        return 0
+    name = str(
+        product.get("insurance_name") or product.get("product_name") or ""
+    ).strip()
+    if any(token in name for token in ("건강", "종합", "질병", "상해", "암")):
+        return 1
+    return 2
 
 
 def _customer_insurance_sort_key(product: dict[str, Any]) -> tuple[Any, ...]:
@@ -3931,19 +4096,59 @@ def _customer_insurance_sort_key(product: dict[str, Any]) -> tuple[Any, ...]:
     missing_names = 1 if (not company or company == "—") and (
         not name or name == "—"
     ) else 0
-    actual_loss = 0 if _customer_insurance_is_actual_loss(product) else 1
-    active = 0 if (
-        product.get("_active")
-        or product.get("is_active_status")
-        or is_active_contract_status(
-            product.get("contract_status") or product.get("status")
-        )
-    ) else 1
     tier = _customer_insurance_status_tier(product)
-    health_other = 0 if any(
-        token in name for token in ("건강", "종합", "질병", "상해", "암")
-    ) else 1
-    return (tier, actual_loss, active, health_other, missing_names, name, company)
+    active_rank = _customer_insurance_active_sort_rank(product) if tier == 0 else 9
+    return (tier, active_rank, missing_names, name, company)
+
+
+def _customer_flatten_insurance_products(
+    entry: dict[str, Any],
+    *,
+    include_reference: bool = True,
+) -> list[dict[str, Any]]:
+    groups, reference = _customer_find_insurance_view_groups(entry)
+    flat: list[dict[str, Any]] = []
+    for group in groups:
+        for item in group.get("products") or []:
+            if isinstance(item, dict):
+                flat.append(item)
+    if include_reference:
+        flat.extend(reference)
+    return flat
+
+
+def _customer_insurance_status_summary_counts(
+    entry: dict[str, Any],
+) -> dict[str, int]:
+    products = _customer_flatten_insurance_products(entry, include_reference=True)
+    counts = {
+        "total": len(products),
+        "normal": 0,
+        "active_valid": 0,
+        "lapsed": 0,
+        "matured": 0,
+        "cancelled": 0,
+        "other": 0,
+        "actual_loss": 0,
+    }
+    for product in products:
+        status = _customer_insurance_contract_status_text(product)
+        bucket = _customer_insurance_status_bucket(status)
+        if bucket == "normal":
+            counts["normal"] += 1
+        elif bucket == "active_valid":
+            counts["active_valid"] += 1
+        elif bucket == "lapsed":
+            counts["lapsed"] += 1
+        elif bucket == "matured":
+            counts["matured"] += 1
+        elif bucket == "cancelled":
+            counts["cancelled"] += 1
+        else:
+            counts["other"] += 1
+        if _customer_insurance_is_actual_loss(product):
+            counts["actual_loss"] += 1
+    return counts
 
 
 def _customer_prepare_insurance_product_display(
@@ -4585,6 +4790,7 @@ def _customer_find_results_payload(flow_id: str, entry: dict[str, Any]) -> dict[
     company_groups, reference_products = _customer_find_insurance_view_groups(entry)
     return {
         "ok": True,
+        "flow_id": flow_id,
         "status": status,
         "medical": {
             "completed": status["medical_completed"],
@@ -4599,7 +4805,10 @@ def _customer_find_results_payload(flow_id: str, entry: dict[str, Any]) -> dict[
             "company_groups": company_groups,
             "reference_product_count": len(reference_products),
         },
-        "ai": _customer_find_ai_summary_customer(entry),
+        "ai": {
+            **_customer_find_ai_summary_customer(entry),
+            "detail_url": f"/customer/analysis?flow_id={fid_q}",
+        },
     }
 
 
@@ -4903,7 +5112,99 @@ def customer_find_insurance_records(request: Request, flow_id: str | None = None
             "company_groups": company_groups,
             "reference_products": reference_products,
             "customer_view": True,
+            "insurance_status_summary": _customer_insurance_status_summary_counts(
+                entry
+            ),
         },
+    )
+
+
+def _build_customer_ai_analysis_page_context(
+    entry: dict[str, Any],
+    flow_id: str,
+) -> dict[str, Any]:
+    """병원용 ai_analysis.html 재사용 — 고객용은 단계·내부 디버그 숨김."""
+    if not _prepare_integrated_flow_entry(flow_id, entry):
+        _apply_saved_medical_records(flow_id, entry)
+        _restore_saved_insurance_records_if_needed(entry)
+    ctx = build_ai_analysis_context(
+        entry,
+        flow_id,
+        debug=False,
+        restore_medical_fn=_apply_saved_medical_records,
+        restore_insurance_fn=_restore_saved_insurance_records_if_needed,
+    )
+    fid_q = quote(flow_id, safe="")
+    chat_back = f"/customer/chat?flow_id={fid_q}"
+    ctx.update(
+        {
+            "view_mode": "customer",
+            "hide_step_bar": True,
+            "hide_internal_debug": True,
+            "debug_panel": False,
+            "analysis_debug": None,
+            "page_title": "AI 보험금 분석 결과",
+            "page_lead": (
+                "진료내역과 보험가입이력을 기준으로 "
+                "청구 검토가 필요한 항목을 정리했습니다."
+            ),
+            "customer_disclaimer": (
+                "본 화면은 청구 검토 후보를 안내하며 보험금 지급을 확정하지 않습니다. "
+                "보험회사 심사 결과에 따라 달라질 수 있습니다."
+            ),
+            "back_url": chat_back,
+            "auto_claim_url": f"{chat_back}&auto_claim=1",
+            "analysis_start_action": f"/customer/analysis/start?flow_id={fid_q}",
+            "header_back_href": chat_back,
+            "header_back_label": "고객 화면으로 돌아가기",
+            "brand_href": chat_back,
+        }
+    )
+    return ctx
+
+
+@app.get("/customer/analysis", response_class=HTMLResponse)
+def customer_ai_analysis_get(request: Request, flow_id: str | None = None):
+    """고객용 AI 분석 전체화면(병원 6단계 화면 재사용, 단계 표시 숨김)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid or fid not in FLOW_STORE:
+        return RedirectResponse("/customer/chat", status_code=303)
+    entry = FLOW_STORE[fid]
+    if not entry.get("customer_find"):
+        return RedirectResponse("/customer/chat", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "ai_analysis.html",
+        _build_customer_ai_analysis_page_context(entry, fid),
+    )
+
+
+@app.post("/customer/analysis/start")
+def customer_ai_analysis_start_post(request: Request, flow_id: str | None = None):
+    """고객용 rule 기반 AI 분석(CODEF 미호출)."""
+    fid = _canonical_flow_id(flow_id)
+    if not fid or fid not in FLOW_STORE:
+        return RedirectResponse("/customer/chat", status_code=303)
+    entry = FLOW_STORE[fid]
+    if not _prepare_integrated_flow_entry(fid, entry):
+        return RedirectResponse(f"/customer/chat?flow_id={quote(fid, safe='')}", status_code=303)
+    try:
+        result = execute_ai_claim_analysis(
+            entry,
+            restore_medical_fn=_apply_saved_medical_records,
+            restore_insurance_fn=_restore_saved_insurance_records_if_needed,
+            use_openai=True,
+        )
+        if result.get("error") == "no_data":
+            entry["ai_analysis_message"] = result.get("message")
+    except Exception:
+        logger.exception("customer ai analysis failed flow_id=%s", fid)
+        entry["ai_analysis_message"] = (
+            "분석 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+        )
+    return RedirectResponse(
+        f"/customer/analysis?flow_id={quote(fid, safe='')}",
+        status_code=303,
     )
 
 
@@ -5290,6 +5591,8 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
     detail_all: list[dict[str, str]] = []
     prescribe_all: list[dict[str, str]] = []
     medical_view: dict[str, Any] = {}
+    if status == "rate_limited" and not entry.get("hospital_kakao_pending"):
+        _begin_hospital_medical_kakao_waiting(entry)
     if status == "completed":
         _ensure_medical_records_loaded(fid, entry)
         medical_view = _medical_records_view_context(entry)
@@ -5310,6 +5613,9 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
     if _debug_panel():
         hira_storage_debug = _hira_storage_debug_context(customer_norm, saved_medical)
 
+    creds_ctx = _credit4u_credentials_view_context(entry)
+    creds_ctx["show_credit4u_credentials_card"] = False
+
     return templates.TemplateResponse(
         request,
         "hira_start.html",
@@ -5320,7 +5626,7 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
             "customer_display": customer_display,
             "has_saved_medical_records": has_saved_medical_records,
             "hira_storage_debug": hira_storage_debug,
-            "medical_status": status,
+            "medical_status": entry.get("medical_status") or status,
             "medical_message": entry.get("medical_message"),
             "medical_result_counts": counts,
             "medical_records": basic_all[:10],
@@ -5330,12 +5636,14 @@ def hospital_hira_start(request: Request, flow_id: str | None = None):
             "codef_debug": _hira_codef_debug_context(entry),
             "hira_stage": entry.get("hira_stage") or "",
             "hira_rate_limited": entry.get("medical_status") == "rate_limited",
+            "demo_kakao_auth_flow": bool(entry.get("demo_kakao_auth_flow")),
             "has_prepared_medical_backup": has_prepared_medical_backup(),
             "codef_limit_debug": _codef_limit_debug_for_template(entry),
             "hospital_kakao_pending": entry.get("hospital_kakao_pending"),
             "show_hira_modal": show_hira_modal,
             "hira_modal_step": hira_modal_step,
-            **_credit4u_credentials_view_context(entry),
+            "hira_step_demo_ui": True,
+            **creds_ctx,
         },
     )
 
@@ -5586,7 +5894,11 @@ def hospital_insurance_request_get(
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
     if _debug_panel() and (debug_existing or "").strip() == "1":
         entry["debug_show_existing_account"] = True
-    _restore_saved_insurance_records_if_needed(entry)
+    customer = entry.get("customer") or {}
+    if _use_prepared_demo_insurance():
+        _prepare_hospital_insurance_demo_kakao_entry(entry, customer)
+    else:
+        _restore_saved_insurance_records_if_needed(entry)
     credential_debug = _ensure_credit4u_credentials_on_insurance_page(entry)
     if entry.get("insurance_source") != "saved_imported" and (
         entry.get("insurance_stage") == "register_completed"
@@ -5663,7 +5975,10 @@ def hospital_insurance_request_start(flow_id: str | None = None):
     if entry.get("medical_status") != "completed":
         return RedirectResponse(f"/hospital/hira-start?flow_id={fid}", status_code=303)
     customer = entry.get("customer") or {}
-    if _customer_has_stored_insurance_records(customer):
+    if (
+        _customer_has_stored_insurance_records(customer)
+        and not _use_prepared_demo_insurance()
+    ):
         _restore_saved_insurance_records_if_needed(entry)
         return RedirectResponse(f"/hospital/insurance-request?flow_id={fid}", status_code=303)
     manual_restart = (

@@ -936,6 +936,8 @@ body.customer-consent-modal-open {
   background: #fff;
   font-size: 0.85rem;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .customer-find-results__btn--primary {
@@ -1238,4 +1240,86 @@ body.customer-view-sheet-open {
     padding: 0.55rem 0.75rem;
     font-size: 0.8rem;
   }
+}
+
+/* 고객용 보험가입이력 상태 요약 */
+.customer-insurance-summary {
+  margin: 0 0 1.25rem;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: #fafafa;
+  border: 1px solid var(--rr-line, #e8e8e8);
+}
+
+.customer-insurance-summary__title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.customer-insurance-summary__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.customer-insurance-summary__card {
+  padding: 0.55rem 0.45rem;
+  border-radius: 0.5rem;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  text-align: center;
+}
+
+.customer-insurance-summary__card--accent {
+  border-color: rgba(196, 30, 58, 0.25);
+  background: #fff8f9;
+}
+
+.customer-insurance-summary__label {
+  display: block;
+  font-size: 0.68rem;
+  color: #666;
+  margin-bottom: 0.15rem;
+}
+
+.customer-insurance-summary__value {
+  font-size: 1rem;
+  color: var(--rr-ink, #1a1a1a);
+}
+
+.customer-insurance-summary__note {
+  margin: 0.65rem 0 0;
+  font-size: 0.75rem;
+  color: #666;
+  line-height: 1.45;
+}
+
+@media (max-width: 36rem) {
+  .customer-insurance-summary__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 고객용 AI 분석 전체화면(병원 템플릿 재사용) */
+.ai-analysis-page--customer .analysis-main {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1rem 1.25rem 2.5rem;
+}
+
+.ai-analysis-page--customer .customer-ai-page-disclaimer {
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.5rem;
+  background: #f5f8ff;
+  border: 1px solid #d8e4ff;
+  font-size: 0.82rem;
+  color: #333;
+  line-height: 1.5;
+}
+
+.ai-analysis-page--customer .analysis-nav {
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }

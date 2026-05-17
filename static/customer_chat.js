@@ -327,6 +327,19 @@
 
   var state = loadState() || defaultState();
 
+  (function initFlowIdFromUrl() {
+    try {
+      var urlFlowId = new URLSearchParams(window.location.search).get("flow_id");
+      if (urlFlowId && !state.flowId) {
+        state.flowId = urlFlowId;
+        state.findStarted = true;
+        saveState();
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  })();
+
   function scrollToBottom() {
     requestAnimationFrame(function () {
       logEl.scrollTop = logEl.scrollHeight;
@@ -554,6 +567,12 @@
   function showResultsFollowUpShell() {
     if (progressEl) progressEl.hidden = true;
     if (resultsEl) resultsEl.hidden = false;
+    if (
+      window.RedRibbonCustomerFindUi &&
+      typeof window.RedRibbonCustomerFindUi.bindAiAnalysisButtons === "function"
+    ) {
+      window.RedRibbonCustomerFindUi.bindAiAnalysisButtons();
+    }
     if (logEl) {
       logEl.hidden = false;
       logEl.classList.add("customer-chat-log--after-results");

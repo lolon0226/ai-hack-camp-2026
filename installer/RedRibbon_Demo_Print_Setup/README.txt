@@ -13,7 +13,8 @@ RedRibbon_Demo_Print_Setup.exe 가 수행하는 작업
   - 작업 스케줄러 RedRibbonDemoReceiver 등록 (로그온 시 실행)
   - 바탕화면 「RedRibbon Receiver 실행」 바로가기
   - PDFCreator 기준 프린터에서 RedRibbon Printer 자동 생성 (Add-Printer)
-  - PDFCreator 자동저장 경로 설정 시도 (C:\RedRibbonDemo\incoming)
+  - PDFCreator 프로필 "RedRibbon Auto Save" 생성·자동저장 ON (Interactive OFF)
+  - 저장 폴더 C:\RedRibbonDemo\incoming, RedRibbon Printer와 프로필 연결
 
 [PDFCreator 미설치 시]
   - 설치는 중단하지 않음
@@ -28,13 +29,26 @@ Receiver Engine이 이를 서버로 전송합니다.
 점검
 ----
 powershell -ExecutionPolicy Bypass -File C:\RedRibbonDemo\check_receiver_ready.ps1
+  기대: FAIL 0, pdfcreator_autosave_profile [OK]
 
 RedRibbon Printer 확인:
   Get-Printer -Name "RedRibbon Printer"
 
-수동 실행
----------
-C:\RedRibbonDemo\run_redribbon_receiver.ps1
+자동설정 실패 시 (fallback, 수동):
+  PDFCreator -> Profiles -> RedRibbon Auto Save
+  Save: Interactive OFF / Automatic ON / Target: C:\RedRibbonDemo\incoming
+  Actions: Open file/PDF Architect OFF
+  Printer: RedRibbon Printer -> RedRibbon Auto Save
+
+Receiver 실행 (자동 / 수동)
+---------------------------
+[자동 - 병원 PC 설치 후]
+  작업 스케줄러 RedRibbonDemoReceiver 가 사용자 로그온 시 Receiver 를 자동 실행합니다.
+  (install_redribbon_demo.ps1 / EXE 설치 시 등록)
+
+[수동 - 본선 시연]
+  안정성을 위해 아래 스크립트를 수동 실행해도 됩니다.
+  C:\RedRibbonDemo\run_redribbon_receiver.ps1
 
 서버(본선 권장): http://127.0.0.1:8010
   ※ print_receiver\config.json 의 server_url 을 설치 PC 포트에 맞게 수정

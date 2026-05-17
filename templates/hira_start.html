@@ -6,7 +6,7 @@
   <title>진료내역 가져오기 · 래드리본 병원용</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body class="hospital-hira-page">
+<body class="hospital-hira-page{% if hospital_kakao_pending == 'medical' %} hospital-hira-page--kakao-demo{% endif %}">
   <header class="hospital-start-header">
     <div class="hospital-start-header__inner">
       <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
@@ -28,11 +28,16 @@
 
     <section class="hospital-hira-hero" aria-labelledby="hospital-hira-title">
       <h1 id="hospital-hira-title" class="hospital-hira-title">진료내역 가져오기</h1>
+      {% if hospital_kakao_pending != 'medical' %}
       <p class="hospital-hira-sub">
         고객의 동의와 본인인증을 바탕으로 최근 5년 병·의원 진료내역과 처방조제내역을 가져옵니다.
       </p>
+      {% endif %}
     </section>
 
+    {% if hospital_kakao_pending == 'medical' %}
+    {% include "partials/hospital_kakao_prepared_panel.html" %}
+    {% else %}
     <section class="hospital-hira-summary" aria-label="고객 정보 요약">
       <h2 class="hospital-hira-summary__title">고객 정보</h2>
       <dl class="hospital-hira-summary__dl">
@@ -64,75 +69,46 @@
         <li>조회 결과는 보험금 청구 가능성 분석을 위한 참고자료이며, 법적 증빙자료를 대체하지 않습니다.</li>
       </ul>
     </section>
+    {% endif %}
 
-    <section class="hospital-hira-state" aria-live="polite">
-      {% include "partials/hospital_kakao_prepared_panel.html" %}
-      {% if hira_rate_limited or medical_status == "rate_limited" %}
-      <div class="hospital-hira-saved-choice hospital-hira-saved-choice--top" role="region" aria-labelledby="hira-rate-limit-title">
-        <h2 id="hira-rate-limit-title" class="hospital-hira-saved-choice__title">CODEF 일일 한도 초과</h2>
-        <p class="hospital-hira-saved-choice__desc">{{ medical_message or "CODEF 일 100건 요청 한도가 초과되었습니다. 준비된 진료내역 저장본을 사용합니다." }}</p>
-        <div class="hospital-hira-saved-choice__actions">
-          <form class="hospital-hira-saved-choice__form" method="post" action="/hospital/hira-use-saved?flow_id={{ flow_id }}">
-            <button type="submit" class="btn btn--primary hospital-hira-saved-choice__btn">저장된 진료내역 사용</button>
-          </form>
-        </div>
-        {% if not has_prepared_medical_backup %}
-        <p class="hospital-hira-state__hint hospital-hira-state__hint--warn">준비된 진료내역 백업 DB를 찾을 수 없습니다. data/redribbon_final_before_*.db 를 확인해 주세요.</p>
-        {% endif %}
-      </div>
-      {% endif %}
-
-      {% if medical_status == "pending" and has_saved_medical_records %}
-      <div class="hospital-hira-saved-choice" role="region" aria-labelledby="hira-saved-choice-title">
-        <h2 id="hira-saved-choice-title" class="hospital-hira-saved-choice__title">이 고객의 저장된 진료내역이 있습니다.</h2>
-        <p class="hospital-hira-saved-choice__desc">저장된 자료를 사용하거나, 새로 조회할 수 있습니다.</p>
-        <div class="hospital-hira-saved-choice__actions">
-          <form class="hospital-hira-saved-choice__form" method="post" action="/hospital/hira-use-saved?flow_id={{ flow_id }}">
-            <button type="submit" class="btn btn--primary hospital-hira-saved-choice__btn">저장된 진료내역 사용</button>
-          </form>
-          <button type="button" class="btn btn--ghost hospital-hira-saved-choice__btn" data-open-hira-modal>새로 진료내역 조회</button>
-        </div>
-      </div>
-      {% endif %}
-
-      {% if medical_status == "pending" %}
-      {% if not has_saved_medical_records %}
-      <p class="hospital-hira-state__lead">심평원 진료내역 조회를 시작합니다.</p>
-      {% else %}
-      <p class="hospital-hira-state__lead hospital-hira-state__lead--sub">또는 아래에서 새 조회를 진행할 수 있습니다.</p>
-      {% endif %}
-      <p class="hospital-hira-state__desc">카카오톡 간편인증으로 본인 확인 후 진료내역을 가져옵니다.</p>
-      <p class="hospital-hira-state__next">
-        <button type="button" class="btn btn--primary hospital-hira-state__btn" data-open-hira-modal>진료내역 조회하기</button>
-      </p>
+    <section class="hospital-hira-state hospital-hira-state--demo" aria-live="polite">
+      {% if hospital_kakao_pending == 'medical' %}
+      {# 카카오 인증 안내·인증 완료 버튼은 상단 패널에 표시 #}
 
       {% elif medical_status == "completed" %}
-      <p class="hospital-hira-state__lead">진료내역 수신 완료</p>
-      <p class="hospital-hira-state__desc">
-        기본진료내역 {{ medical_result_counts.basic }}건, 세부진료정보 {{ medical_result_counts.detail }}건,
-        처방조제내역 {{ medical_result_counts.prescribe }}건을 확인했습니다.
-      </p>
-      <ul class="hospital-hira-counts">
-        <li>기본진료내역 <strong>{{ medical_result_counts.basic }}</strong>건</li>
-        <li>세부진료정보 <strong>{{ medical_result_counts.detail }}</strong>건</li>
-        <li>처방조제내역 <strong>{{ medical_result_counts.prescribe }}</strong>건</li>
-      </ul>
-      <p class="hospital-hira-state__next">
-        <button
-          type="button"
-          class="btn btn--ghost hospital-hira-state__btn toggle-panel-btn"
-          data-toggle-target="hira-page-results-panel"
-          data-open-text="진료내역 결과 보기"
-          data-close-text="진료내역 접기"
-          aria-expanded="false"
-          aria-controls="hira-page-results-panel"
-        >진료내역 결과 보기</button>
-      </p>
-      <div id="hira-page-results-panel" class="toggle-panel hira-page-results-panel" hidden>
-        {% include "partials/medical_records_full_tables.html" %}
+      <div class="hospital-hira-complete-card" role="status">
+        <p class="hospital-hira-state__lead hospital-hira-state__lead--success">진료내역 조회가 완료되었습니다.</p>
+        <p class="hospital-hira-state__desc">
+          기본진료내역 {{ medical_result_counts.basic }}건, 세부진료정보 {{ medical_result_counts.detail }}건,
+          처방조제내역 {{ medical_result_counts.prescribe }}건을 확인했습니다.
+        </p>
+        <p class="hospital-hira-state__next hospital-hira-state__next--center">
+          <button
+            type="button"
+            class="btn btn--primary hospital-hira-state__btn hospital-hira-state__btn--hero toggle-panel-btn"
+            id="medical-result-toggle-btn"
+            data-toggle-target="medical-result-panel"
+            data-open-text="진료내역 결과보기"
+            data-close-text="진료내역 접기"
+            aria-expanded="false"
+            aria-controls="medical-result-panel"
+          >진료내역 결과보기</button>
+        </p>
+        <div id="medical-result-panel" class="toggle-panel hira-page-results-panel" hidden>
+          {% include "partials/medical_records_full_tables.html" %}
+        </div>
+        <p class="hospital-hira-state__next hospital-hira-state__next--center">
+          <a class="btn btn--primary hospital-hira-state__btn" href="/hospital/insurance-request?flow_id={{ flow_id }}">보험가입이력 가져오기</a>
+        </p>
       </div>
-      <p class="hospital-hira-state__next">
-        <a class="btn btn--primary hospital-hira-state__btn" href="/hospital/insurance-request?flow_id={{ flow_id }}">보험가입이력 가져오기</a>
+
+      {% elif medical_status == "pending" %}
+      <p class="hospital-hira-state__lead">심평원 진료내역 조회를 시작합니다.</p>
+      <p class="hospital-hira-state__desc">카카오톡 간편인증으로 본인 확인 후 진료내역을 가져옵니다.</p>
+      <p class="hospital-hira-state__next hospital-hira-state__next--center">
+        <form method="post" action="/hospital/hira-use-saved?flow_id={{ flow_id }}" class="hospital-hira-state__form-inline">
+          <button type="submit" class="btn btn--primary hospital-hira-state__btn hospital-hira-state__btn--hero">진료내역 조회하기</button>
+        </form>
       </p>
 
       {% elif medical_status == "failed" %}
@@ -140,91 +116,49 @@
       {% if medical_message %}
       <p class="hospital-hira-state__desc">{{ medical_message }}</p>
       {% endif %}
-      <p class="hospital-hira-state__next">
-        <button type="button" class="btn btn--ghost hospital-hira-state__btn" data-open-hira-modal>다시 조회하기</button>
+      <p class="hospital-hira-state__next hospital-hira-state__next--center">
+        <form method="post" action="/hospital/hira-use-saved?flow_id={{ flow_id }}" class="hospital-hira-state__form-inline">
+          <button type="submit" class="btn btn--primary hospital-hira-state__btn">다시 시도</button>
+        </form>
       </p>
 
-      {% elif medical_status == "waiting_auth" or medical_status == "waiting_auth_debug_needed" %}
-      <p class="hospital-hira-state__lead">카카오 인증 진행 중</p>
-      <p class="hospital-hira-state__desc">아래 모달에서 인증 단계를 이어서 진행해 주세요.</p>
-      <p class="hospital-hira-state__next">
-        <button type="button" class="btn btn--primary hospital-hira-state__btn" data-open-hira-modal>인증 창 열기</button>
-      </p>
-
-      {% else %}
-      <p class="hospital-hira-state__lead">알 수 없는 처리 상태입니다.</p>
       {% endif %}
 
-      {% if debug_panel and codef_limit_debug %}
-      <aside class="hospital-hira-debug hospital-hira-debug--limit" aria-label="CODEF 한도 디버그">
-        <h3 class="hospital-hira-debug__title">CODEF 한도 · 준비본</h3>
-        <dl class="hospital-hira-debug__dl">
-          <div class="hospital-hira-debug__row"><dt>codef_daily_limit_exceeded</dt><dd>{{ codef_limit_debug.codef_daily_limit_exceeded }}</dd></div>
-          <div class="hospital-hira-debug__row"><dt>realtime_codef_call_skipped</dt><dd>{{ codef_limit_debug.realtime_codef_call_skipped }}</dd></div>
-          <div class="hospital-hira-debug__row"><dt>demo_kakao_auth_flow</dt><dd>{{ codef_limit_debug.demo_kakao_auth_flow }}</dd></div>
-          <div class="hospital-hira-debug__row"><dt>prepared_medical_loaded</dt><dd>{{ codef_limit_debug.prepared_medical_loaded }}</dd></div>
-          <div class="hospital-hira-debug__row"><dt>hira_stage</dt><dd>{{ hira_stage or "—" }}</dd></div>
-        </dl>
-      </aside>
-      {% endif %}
-
-      {% if debug_panel and hira_storage_debug %}
-      <aside class="hospital-hira-debug hospital-hira-debug--storage" aria-label="진료내역 저장 디버그">
-        <h3 class="hospital-hira-debug__title">진료내역 저장</h3>
-        <dl class="hospital-hira-debug__dl">
-          <div class="hospital-hira-debug__row">
-            <dt>storage_db_path</dt>
-            <dd>{{ hira_storage_debug.storage_db_path }}</dd>
-          </div>
-          <div class="hospital-hira-debug__row">
-            <dt>saved_medical_exists</dt>
-            <dd>{% if hira_storage_debug.saved_medical_exists %}예{% else %}아니오{% endif %}</dd>
-          </div>
-          <div class="hospital-hira-debug__row">
-            <dt>saved_medical_counts</dt>
-            <dd>{{ hira_storage_debug.saved_medical_counts }}</dd>
-          </div>
-          <div class="hospital-hira-debug__row">
-            <dt>customer_key_created</dt>
-            <dd>{% if hira_storage_debug.customer_key_created %}예{% else %}아니오{% endif %}</dd>
-          </div>
-          <div class="hospital-hira-debug__row">
-            <dt>REDRIBBON_SEARCH_HASH_SECRET configured</dt>
-            <dd>{% if hira_storage_debug.search_hash_secret_configured %}예{% else %}아니오{% endif %}</dd>
-          </div>
-          {% if hira_storage_debug.storage_secret_message %}
-          <div class="hospital-hira-debug__row hospital-hira-debug__row--warn">
-            <dt>저장 설정</dt>
-            <dd>{{ hira_storage_debug.storage_secret_message }}</dd>
-          </div>
+      {% if debug_panel and (hira_rate_limited or codef_limit_debug or hira_storage_debug or codef_debug) %}
+      <details class="hospital-hira-dev-details">
+        <summary class="hospital-hira-dev-details__summary">개발자 진단 정보</summary>
+        <div class="hospital-hira-dev-details__body">
+          {% if hira_rate_limited or medical_status == "rate_limited" %}
+          <p class="hospital-hira-saved-choice__desc">{{ medical_message or "CODEF 일 100건 요청 한도가 초과되었습니다. 준비된 진료내역 저장본을 사용합니다." }}</p>
           {% endif %}
-        </dl>
-        <p class="hospital-hira-debug__link"><a href="/debug/storage-health">저장 DB 상태 상세</a></p>
-      </aside>
-      {% endif %}
-
-      {% if codef_debug %}
-      <aside class="hospital-hira-debug hospital-hira-debug--page" aria-label="개발자 확인">
-        <h3 class="hospital-hira-debug__title">CODEF 디버그 (페이지)</h3>
-        <dl class="hospital-hira-debug__dl">
-          <div class="hospital-hira-debug__row">
-            <dt>twoWayInfo_found</dt>
-            <dd>{% if codef_debug.two_way_info_found %}예{% else %}아니오{% endif %}</dd>
-          </div>
-          <div class="hospital-hira-debug__row">
-            <dt>twoWayInfo 저장</dt>
-            <dd>{% if codef_debug.two_way_info_saved %}예{% else %}아니오{% endif %}</dd>
-          </div>
-          <div class="hospital-hira-debug__row">
-            <dt>data_keys</dt>
-            <dd>{{ codef_debug.data_keys }}</dd>
-          </div>
-        </dl>
-      </aside>
+          {% if codef_limit_debug %}
+          <aside class="hospital-hira-debug hospital-hira-debug--limit" aria-label="CODEF 한도 디버그">
+            <h3 class="hospital-hira-debug__title">CODEF 한도 · 준비본</h3>
+            <dl class="hospital-hira-debug__dl">
+              <div class="hospital-hira-debug__row"><dt>codef_daily_limit_exceeded</dt><dd>{{ codef_limit_debug.codef_daily_limit_exceeded }}</dd></div>
+              <div class="hospital-hira-debug__row"><dt>demo_kakao_auth_flow</dt><dd>{{ codef_limit_debug.demo_kakao_auth_flow }}</dd></div>
+            </dl>
+          </aside>
+          {% endif %}
+          {% if hira_storage_debug %}
+          <aside class="hospital-hira-debug hospital-hira-debug--storage" aria-label="진료내역 저장 디버그">
+            <h3 class="hospital-hira-debug__title">진료내역 저장 DEBUG</h3>
+            <dl class="hospital-hira-debug__dl">
+              <div class="hospital-hira-debug__row"><dt>storage_db_path</dt><dd>{{ hira_storage_debug.storage_db_path }}</dd></div>
+            </dl>
+          </aside>
+          {% endif %}
+          {% if codef_debug %}
+          <aside class="hospital-hira-debug hospital-hira-debug--page" aria-label="CODEF 디버그">
+            <h3 class="hospital-hira-debug__title">CODEF 디버그</h3>
+          </aside>
+          {% endif %}
+          <p class="hospital-hira-state__hint">medical_status={{ medical_status }} · hira_stage={{ hira_stage or "—" }}</p>
+        </div>
+      </details>
       {% endif %}
     </section>
 
-    {% include "partials/credit4u_credentials_card.html" %}
   </main>
 
   <footer class="hospital-start-footer">
@@ -234,6 +168,7 @@
     </p>
   </footer>
 
+  {% if not hospital_kakao_pending %}
   <div id="hira-auth-modal"
     class="hira-modal{% if show_hira_modal %} hira-modal--open{% endif %}"
     aria-hidden="{% if show_hira_modal %}false{% else %}true{% endif %}"
@@ -302,123 +237,7 @@
         </div>
         <div class="hira-modal-result-panel" id="hira-full-results" hidden>
           <h3 class="hira-modal-result-panel__title">진료내역 전체 결과</h3>
-          <div class="hira-medical-tabs" role="tablist" aria-label="진료내역 유형">
-            <button type="button" class="hira-medical-tabs__btn is-active" role="tab" aria-selected="true" data-medical-tab="basic" id="hira-tab-basic">
-              기본진료내역 {{ medical_result_counts.basic }}건
-            </button>
-            <button type="button" class="hira-medical-tabs__btn" role="tab" aria-selected="false" data-medical-tab="detail" id="hira-tab-detail">
-              세부진료정보 {{ medical_result_counts.detail }}건
-            </button>
-            <button type="button" class="hira-medical-tabs__btn" role="tab" aria-selected="false" data-medical-tab="prescribe" id="hira-tab-prescribe">
-              처방조제내역 {{ medical_result_counts.prescribe }}건
-            </button>
-          </div>
-          <div class="hira-medical-tabs__body">
-            <div class="hira-medical-tabs__panel is-active" data-medical-tab-panel="basic" role="tabpanel" aria-labelledby="hira-tab-basic">
-              {% if medical_records_basic_all %}
-              <div class="hira-medical-tabs__scroll">
-                <div class="hira-medical-tabs__table-wrap">
-                  <table class="hira-medical-tabs__table">
-                    <thead>
-                      <tr>
-                        <th scope="col">진료일자</th>
-                        <th scope="col">병원명</th>
-                        <th scope="col">진료과</th>
-                        <th scope="col">진료형태</th>
-                        <th scope="col">주상병명</th>
-                        <th scope="col">본인부담금</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {% for row in medical_records_basic_all %}
-                      <tr>
-                        <td>{{ row.visit_date }}</td>
-                        <td>{{ row.hospital_name }}</td>
-                        <td>{{ row.department }}</td>
-                        <td>{{ row.treat_type }}</td>
-                        <td>{{ row.main_diagnosis }}</td>
-                        <td>{{ row.copay_amount }}</td>
-                      </tr>
-                      {% endfor %}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              {% else %}
-              <p class="hira-modal-result-panel__empty">표시할 기본진료내역이 없습니다.</p>
-              {% endif %}
-            </div>
-            <div class="hira-medical-tabs__panel" data-medical-tab-panel="detail" role="tabpanel" aria-labelledby="hira-tab-detail" hidden>
-              {% if medical_records_detail_all %}
-              <div class="hira-medical-tabs__scroll">
-                <div class="hira-medical-tabs__table-wrap">
-                  <table class="hira-medical-tabs__table">
-                    <thead>
-                      <tr>
-                        <th scope="col">진료일자</th>
-                        <th scope="col">병원명</th>
-                        <th scope="col">코드명/항목명</th>
-                        <th scope="col">투약량</th>
-                        <th scope="col">투여횟수</th>
-                        <th scope="col">총투약일수</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {% for row in medical_records_detail_all %}
-                      <tr>
-                        <td>{{ row.visit_date }}</td>
-                        <td>{{ row.hospital_name }}</td>
-                        <td>{{ row.item_name }}</td>
-                        <td>{{ row.dose }}</td>
-                        <td>{{ row.frequency }}</td>
-                        <td>{{ row.days }}</td>
-                      </tr>
-                      {% endfor %}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              {% else %}
-              <p class="hira-modal-result-panel__empty">표시할 세부진료정보가 없습니다.</p>
-              {% endif %}
-            </div>
-            <div class="hira-medical-tabs__panel" data-medical-tab-panel="prescribe" role="tabpanel" aria-labelledby="hira-tab-prescribe" hidden>
-              {% if medical_records_prescribe_all %}
-              <div class="hira-medical-tabs__scroll">
-                <div class="hira-medical-tabs__table-wrap">
-                  <table class="hira-medical-tabs__table">
-                    <thead>
-                      <tr>
-                        <th scope="col">조제일자</th>
-                        <th scope="col">병원/약국명</th>
-                        <th scope="col">약품명</th>
-                        <th scope="col">성분명</th>
-                        <th scope="col">투약량</th>
-                        <th scope="col">투여횟수</th>
-                        <th scope="col">총투약일수</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {% for row in medical_records_prescribe_all %}
-                      <tr>
-                        <td>{{ row.dispense_date }}</td>
-                        <td>{{ row.pharmacy_name }}</td>
-                        <td>{{ row.drug_name }}</td>
-                        <td>{{ row.ingredient }}</td>
-                        <td>{{ row.dose }}</td>
-                        <td>{{ row.frequency }}</td>
-                        <td>{{ row.days }}</td>
-                      </tr>
-                      {% endfor %}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              {% else %}
-              <p class="hira-modal-result-panel__empty">표시할 처방조제내역이 없습니다.</p>
-              {% endif %}
-            </div>
-          </div>
+          {% include "partials/medical_records_full_tables.html" %}
         </div>
       </div>
 
@@ -434,12 +253,12 @@
       </div>
     </div>
   </div>
-
-  {% if show_credit4u_credentials_card %}
-  <script src="/static/insurance_request.js"></script>
   {% endif %}
+
   <script src="/static/medical_records_full.js" defer></script>
   <script src="/static/hira_page_results.js" defer></script>
+  {% if not hospital_kakao_pending %}
   <script src="/static/hira_modal.js"></script>
+  {% endif %}
 </body>
 </html>

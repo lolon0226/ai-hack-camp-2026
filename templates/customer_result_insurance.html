@@ -16,9 +16,11 @@
   <main class="hospital-existing-insurance-main customer-result-main">
     <section class="hospital-existing-insurance-hero">
       <p class="hospital-existing-insurance-hero__lead">
-        {{ customer_name }} · 저장된 조회 자료 · CODEF 미호출
+        {{ customer_name }} · 저장된 조회 자료
       </p>
     </section>
+
+    {% include "partials/customer_insurance_status_summary.html" %}
 
     {% if company_groups %}
     <div class="insurance-company-list">

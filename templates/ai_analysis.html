@@ -3,32 +3,41 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI 분석 · 래드리본 병원용</title>
+  <title>{% if view_mode == 'customer' %}AI 보험금 분석 결과{% else %}AI 분석 · 래드리본 병원용{% endif %}</title>
   <link rel="stylesheet" href="/static/style.css" />
+  {% if view_mode == 'customer' %}
+  <link rel="stylesheet" href="/static/customer_chat.css" />
+  {% endif %}
 </head>
-<body class="hospital-insurance-page analysis-page ai-analysis-page">
-  <header class="hospital-start-header">
+<body class="hospital-insurance-page analysis-page ai-analysis-page{% if view_mode == 'customer' %} ai-analysis-page--customer{% endif %}">
+  <header class="hospital-start-header{% if view_mode == 'customer' %} customer-result-header{% endif %}">
     <div class="hospital-start-header__inner">
-      <a class="brand brand--compact" href="/hospital/start" aria-label="병원용 래드리본">
+      <a class="brand brand--compact" href="{{ brand_href or '/hospital/start' }}" aria-label="래드리본">
         <span class="brand__mark" aria-hidden="true"></span>
         <span class="brand__text">
           <span class="brand__name-ko">래드리본</span>
           <span class="brand__name-en">RedRibbon</span>
         </span>
       </a>
-      {% if debug_panel %}
+      {% if debug_panel and not hide_internal_debug %}
       <span class="hospital-start-header__debug"><a href="/debug/flows" class="hospital-start-header__debug-link">디버그</a></span>
       {% endif %}
-      <a class="hospital-start-header__back" href="/">서비스 선택</a>
+      <a class="hospital-start-header__back" href="{{ header_back_href or '/' }}">{{ header_back_label or '서비스 선택' }}</a>
     </div>
   </header>
 
   <main class="analysis-main ai-analysis-main">
+    {% if not hide_step_bar %}
     {% include "partials/step_bar.html" %}
+    {% endif %}
+
+    {% if view_mode == 'customer' and customer_disclaimer %}
+    <p class="customer-ai-page-disclaimer" role="note">{{ customer_disclaimer }}</p>
+    {% endif %}
 
     <section class="analysis-section analysis-hero" aria-labelledby="ai-analysis-title">
-      <h1 id="ai-analysis-title" class="analysis-title">6단계 · AI 분석</h1>
-      <p class="analysis-lead">진료내역과 보험가입이력 요약을 바탕으로 <strong>청구 검토 후보</strong>를 분류합니다. 보험금 지급을 확정하지 않습니다.</p>
+      <h1 id="ai-analysis-title" class="analysis-title">{% if page_title %}{{ page_title }}{% else %}6단계 · AI 분석{% endif %}</h1>
+      <p class="analysis-lead">{% if page_lead %}{{ page_lead }}{% else %}진료내역과 보험가입이력 요약을 바탕으로 <strong>청구 검토 후보</strong>를 분류합니다. 보험금 지급을 확정하지 않습니다.{% endif %}</p>
       {% if input_summary %}
       <p class="analysis-note">입력 기준: 진료 {{ input_summary.medical_count }}건 · 보험 상품 {{ input_summary.insurance_product_count }}건</p>
       {% endif %}
@@ -38,13 +47,17 @@
     <section class="analysis-section">
       <p class="analysis-empty">{{ no_data_message or '저장된 진료내역 또는 보험가입이력이 없습니다.' }}</p>
       <nav class="analysis-nav">
+        {% if view_mode == 'customer' %}
+        <a class="btn btn--primary" href="{{ back_url }}">고객 화면으로 돌아가기</a>
+        {% else %}
         <a class="btn btn--ghost" href="/hospital/analysis-ready?flow_id={{ flow_id }}">5단계로 이동</a>
+        {% endif %}
       </nav>
     </section>
     {% elif not has_analysis %}
     <section class="analysis-section ai-start-panel">
       <p class="analysis-lead">저장된 데이터를 rule 엔진으로 분석합니다. (CODEF 호출 없음)</p>
-      <form method="post" action="/hospital/ai-analysis/start?flow_id={{ flow_id }}">
+      <form method="post" action="{{ analysis_start_action or ('/hospital/ai-analysis/start?flow_id=' ~ flow_id) }}">
         <button type="submit" class="btn btn--primary">AI 분석 시작</button>
       </form>
     </section>
@@ -86,8 +99,8 @@
         <p class="ai-summary-card__value">{{ totals.total_candidate_count }}건</p>
       </article>
       <article class="ai-summary-card">
-        <h2 class="ai-summary-card__label">우선 검토 후보</h2>
-        <p class="ai-summary-card__hint">청구 가능성 높음(추정) — 지급 확정 아님</p>
+        <h2 class="ai-summary-card__label">{% if view_mode == 'customer' %}우선 확인이 필요한 항목{% else %}우선 검토 후보{% endif %}</h2>
+        <p class="ai-summary-card__hint">{% if view_mode == 'customer' %}청구 검토 후보(추정){% else %}청구 가능성 높음(추정) — 지급 확정 아님{% endif %}</p>
         <p class="ai-summary-card__value">{{ totals.high_count }}건</p>
       </article>
       <article class="ai-summary-card">
@@ -232,7 +245,11 @@
     </section>
     {% endif %}
 
-    <nav class="analysis-nav" aria-label="단계 이동">
+    <nav class="analysis-nav" aria-label="{% if view_mode == 'customer' %}고객 메뉴{% else %}단계 이동{% endif %}">
+      {% if view_mode == 'customer' %}
+      <a class="btn btn--primary" href="{{ auto_claim_url }}">자동청구를 이용하기</a>
+      <a class="btn btn--ghost" href="{{ back_url }}">고객 화면으로 돌아가기</a>
+      {% else %}
       <a class="btn btn--ghost" href="/hospital/analysis-ready?flow_id={{ flow_id }}">5단계 통합 결과확인</a>
       {% if has_data and has_analysis %}
       <form class="analysis-nav__form" method="post" action="/hospital/ai-analysis/start?flow_id={{ flow_id }}">
@@ -240,9 +257,10 @@
       </form>
       {% endif %}
       <a class="btn btn--ghost" href="/hospital/start">처음으로</a>
+      {% endif %}
     </nav>
 
-    {% if debug_panel and analysis_debug %}
+    {% if debug_panel and analysis_debug and not hide_internal_debug %}
     <aside class="hospital-insurance-debug analysis-debug" aria-label="디버그">
       <h2 class="hospital-insurance-debug__title">DEBUG</h2>
       <dl class="hospital-insurance-debug__dl">
@@ -293,7 +311,7 @@
   </main>
 
   <footer class="hospital-start-footer">
-    <p>본 화면은 청구 검토 후보 추정이며, 최종 청구 가능 여부는 약관·서류·보험사 심사 결과에 따릅니다.</p>
+    <p>{% if view_mode == 'customer' %}본 화면은 청구 검토 후보를 안내합니다. 보험회사 심사 결과에 따라 달라질 수 있습니다.{% else %}본 화면은 청구 검토 후보 추정이며, 최종 청구 가능 여부는 약관·서류·보험사 심사 결과에 따릅니다.{% endif %}</p>
   </footer>
   <script src="/static/ai_analysis.js" defer></script>
 </body>
